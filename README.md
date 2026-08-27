@@ -50,7 +50,7 @@ Helix itself handles the shared queue, stations, playlists, music discovery, Sub
 
 ## Installation
 
-Download the latest compiled Android release from the repository's **Releases** page.
+Download the latest compiled Android APK from the **[Helix for Android Releases](https://github.com/UnifiedKings/helix-android/releases)** page.
 
 Install the provided APK on your Android device.
 
