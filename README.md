@@ -2,9 +2,13 @@
 
 Native Android client for [Helix](https://github.com/UnifiedKings/helix), the self-hosted music discovery, playback, and fulfillment platform.
 
-Helix for Android is built with Kotlin and Jetpack Compose and connects to an existing Helix server for music discovery, playback, queue management, stations, playlists, and Subsonic integration.
+Helix for Android connects to an existing Helix server for music discovery, playback, queue management, stations, playlists, and Subsonic integration.
 
 > **Status:** Work in progress. The Android app is under active development and features may change.
+
+<p align="center">
+  <img src="docs/media/player.png" width="320" alt="Helix for Android Now Playing">
+</p>
 
 ## Features
 
@@ -21,27 +25,16 @@ Helix for Android is built with Kotlin and Jetpack Compose and connects to an ex
 - Subsonic availability detection on Now Playing
 - Add missing tracks to Subsonic directly from the app
 - Native Android appearance customization
-  - Accent color
-  - Background color
-  - Surface color
-  - Presets
-  - Visual color picker
 - Configurable playback behavior
 - Support for playback started or changed by other Helix clients
 
-## Screenshots
+### Stations
 
-Screenshots coming soon.
-
-<!--
-Example:
+Browse and start the same Helix stations available on your server directly from the Android app.
 
 <p align="center">
-  <img src="docs/screenshots/player.png" width="250" alt="Now Playing">
-  <img src="docs/screenshots/search.png" width="250" alt="Search">
-  <img src="docs/screenshots/library.png" width="250" alt="Library">
+  <img src="docs/media/stations.gif" width="320" alt="Browsing Helix stations on Android">
 </p>
--->
 
 ## Requirements
 
@@ -49,25 +42,21 @@ Helix for Android is a client and requires a running Helix server.
 
 You will need:
 
-- Android Studio
-- An Android device or emulator
+- An Android device
 - A running Helix instance
 - Network access from the Android device to the Helix server
 
 Helix itself handles the shared queue, stations, playlists, music discovery, Subsonic integration, and track fulfillment.
 
-## Building
+## Installation
 
-Clone the repository:
+Download the latest compiled Android release from the repository's **Releases** page.
 
-```bash
-git clone https://github.com/UnifiedKings/helix-android.git
-cd helix-android
-```
+Install the provided APK on your Android device.
 
-Open the project in Android Studio.
+Depending on your Android version and browser or file manager, Android may ask you to allow installation from that source before the APK can be installed.
 
-Allow Gradle to sync, select an Android device or emulator, and press **Run**.
+Once installed, open Helix and connect it to your existing Helix server.
 
 ## Connecting to Helix
 
@@ -78,6 +67,10 @@ After launching the app:
 3. Enter your Helix server URL
 4. Enter your Helix username and password
 5. Connect
+
+<p align="center">
+  <img src="docs/media/connection.gif" width="320" alt="Connecting Helix for Android to a Helix server">
+</p>
 
 Example remote URL:
 
@@ -109,7 +102,11 @@ Natural track completion is also reported back to Helix so queue and station beh
 
 The queue is intentionally hidden on the main Now Playing screen.
 
-Swipe upward on the player to open the queue as a bottom drawer. From there, queue items can be viewed and managed without permanently taking space away from the player.
+Swipe upward on the player to open the queue as a drawer. This keeps Now Playing focused on the current track while leaving the full queue immediately accessible.
+
+<p align="center">
+  <img src="docs/media/queue.gif" width="320" alt="Opening the Helix queue with a swipe-up gesture">
+</p>
 
 ## Subsonic Integration
 
@@ -132,10 +129,33 @@ Currently configurable:
 - Accent color
 - Background color
 - Surface color
-
-Users can choose from presets or use the visual color picker for custom colors.
+- Color presets
+- Visual custom color picker
 
 These settings are stored locally on the Android device and do not modify the appearance of the Helix web interface.
+
+<p align="center">
+  <img src="docs/media/appearance.gif" width="320" alt="Changing the native Helix Android appearance">
+</p>
+
+## Building from Source
+
+This section is only for developers who want to build or modify Helix for Android themselves.
+
+You will need:
+
+- Android Studio
+- Android SDK / Gradle tooling
+- An Android device or emulator for testing
+
+Clone the repository:
+
+```bash
+git clone https://github.com/UnifiedKings/helix-android.git
+cd helix-android
+```
+
+Open the project in Android Studio, allow Gradle to sync, then select an Android device or emulator and press **Run**.
 
 ## Technology
 
