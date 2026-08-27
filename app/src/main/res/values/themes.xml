@@ -1,0 +1,19 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.HelixApp" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <!-- Legacy/XML theme values. Native Compose screens use their own app-only theme. -->
+        <item name="colorPrimary">@color/helix_background</item>
+        <item name="colorPrimaryVariant">@color/helix_background</item>
+        <item name="colorOnPrimary">@color/white</item>
+
+        <item name="colorSecondary">@color/helix_amber</item>
+        <item name="colorSecondaryVariant">@color/helix_amber</item>
+        <item name="colorOnSecondary">@color/black</item>
+
+        <!-- Keep Android system chrome neutral instead of inheriting the old purple theme. -->
+        <item name="android:statusBarColor">@color/helix_background</item>
+        <item name="android:navigationBarColor">@color/helix_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>
