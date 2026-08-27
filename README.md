@@ -90,8 +90,6 @@ HTTPS is strongly recommended when accessing Helix outside a trusted local netwo
 
 ## Playback Architecture
 
-Helix remains the source of truth for playback and queue state.
-
 The Android app uses Media3 / ExoPlayer for local playback and Android media-session integration. Transport actions such as Previous and Next are captured by the app and sent to Helix, which decides what should actually play.
 
 This keeps the Android client synchronized with playback changes made from other Helix clients, including the web frontend.
