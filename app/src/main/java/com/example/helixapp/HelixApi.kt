@@ -16,19 +16,30 @@ interface HelixApi {
 
     @POST("auth/login")
     suspend fun login(@Body payload: RequestBody): Response<String>
-
     @POST("auth/logout")
     suspend fun logout(): Response<String>
 
     @GET("auth/me")
     suspend fun me(): Response<String>
 
+    // Admin user management
+    @GET("admin/users")
+    suspend fun adminUsers(): Response<String>
+
+    @POST("admin/users")
+    suspend fun adminCreateUser(@Body payload: RequestBody): Response<String>
+
+    @PATCH("admin/users/{user_id}")
+    suspend fun adminUpdateUser(
+        @Path("user_id") userId: String,
+        @Body payload: RequestBody,
+    ): Response<String>
+
     @GET("api/user/settings")
     suspend fun userSettings(): Response<String>
 
     @PATCH("api/user/settings")
     suspend fun updateUserSettings(@Body payload: RequestBody): Response<String>
-
     // Helix backend 0.0.33: YT Music search endpoint.
     @GET("api/ytmusic/search")
     suspend fun ytmusicSearch(
@@ -43,7 +54,6 @@ interface HelixApi {
         @Query("q") q: String,
         @Query("artist_limit") artistLimit: Int = 15,
     ): Response<String>
-
     @GET("api/ytmusic/artists/{browse_id}")
     suspend fun artistDetail(@Path("browse_id") browseId: String): Response<String>
 
@@ -52,7 +62,6 @@ interface HelixApi {
         @Path("browse_id") browseId: String,
         @Query("limit") limit: Int = 10,
     ): Response<String>
-
     @GET("api/ytmusic/artists/{browse_id}/albums")
     suspend fun artistAlbums(
         @Path("browse_id") browseId: String,
@@ -64,7 +73,6 @@ interface HelixApi {
         @Path("browse_id") browseId: String,
         @Query("limit") limit: Int = 20,
     ): Response<String>
-
     // Album view (YouTube Music)
     @GET("api/album/{browse_id}")
     suspend fun albumView(@Path("browse_id") browseId: String): Response<String>
@@ -82,7 +90,6 @@ interface HelixApi {
         @Path("station_id") stationId: String,
         @Body payload: RequestBody,
     ): Response<String>
-
     @POST("api/stations")
     suspend fun createStation(@Body payload: RequestBody): Response<String>
 
@@ -96,7 +103,6 @@ interface HelixApi {
     // Playlists
     @GET("api/playlists")
     suspend fun listPlaylists(): Response<String>
-
     @GET("api/playlists/{playlist_id}")
     suspend fun playlistDetail(@Path("playlist_id") playlistId: String): Response<String>
 
@@ -105,7 +111,6 @@ interface HelixApi {
 
     @DELETE("api/playlists/{playlist_id}")
     suspend fun deletePlaylist(@Path("playlist_id") playlistId: String): Response<String>
-
     @POST("api/playlists/{playlist_id}/tracks")
     suspend fun playlistAddTrack(
         @Path("playlist_id") playlistId: String,
@@ -117,7 +122,6 @@ interface HelixApi {
         @Path("playlist_id") playlistId: String,
         @Path("track_id") trackId: String,
     ): Response<String>
-
     @PATCH("api/playlists/{playlist_id}/tracks/reorder")
     suspend fun playlistReorderTracks(
         @Path("playlist_id") playlistId: String,
@@ -130,7 +134,6 @@ interface HelixApi {
 
     @POST("api/playback/track")
     suspend fun playTrack(@Body payload: RequestBody): Response<String>
-
     @POST("api/playback/album")
     suspend fun playAlbum(@Body payload: RequestBody): Response<String>
 
@@ -142,9 +145,11 @@ interface HelixApi {
 
     @POST("api/queue/track")
     suspend fun queueAppendTrack(@Body payload: RequestBody): Response<String>
-
     @DELETE("api/queue/items/{queue_item_id}")
     suspend fun queueRemoveItem(@Path("queue_item_id") queueItemId: String): Response<String>
+
+    @PATCH("api/queue/items/reorder")
+    suspend fun reorderQueue(@Body payload: RequestBody): Response<String>
 
     @POST("api/playback/jump")
     suspend fun jump(@Body payload: RequestBody): Response<String>
@@ -157,14 +162,13 @@ interface HelixApi {
 
     @POST("api/playback/pause")
     suspend fun pause(): Response<String>
-
     @POST("api/playback/resume")
     suspend fun resume(): Response<String>
 
     @POST("api/playback/ended")
     suspend fun ended(): Response<String>
 
-    
+
     // Subsonic availability (batch resolver)
     @POST("api/subsonic/resolve")
     suspend fun subsonicResolve(@Body payload: RequestBody): Response<String>
@@ -172,7 +176,6 @@ interface HelixApi {
     // Subsonic add (enqueue download/import)
     @POST("api/subsonic/add/track")
     suspend fun subsonicAddTrack(@Body payload: RequestBody): Response<String>
-
     @POST("api/subsonic/add/album")
     suspend fun subsonicAddAlbum(@Body payload: RequestBody): Response<String>
 
@@ -189,7 +192,6 @@ interface HelixApi {
 
     @POST("api/likes/toggle")
     suspend fun likesToggle(@Body payload: RequestBody): Response<String>
-
     // Dislikes
     @GET("api/dislikes/is-disliked")
     suspend fun dislikesIsDisliked(
@@ -199,7 +201,6 @@ interface HelixApi {
 
     @POST("api/dislikes/toggle")
     suspend fun dislikesToggle(@Body payload: RequestBody): Response<String>
-
     // Stations playback
     @POST("api/stations/{station_id}/play")
     suspend fun playStation(@Path("station_id") stationId: String, @Body payload: RequestBody): Response<String>

@@ -1,6 +1,5 @@
 package com.example.helixapp
 
-import android.content.pm.PackageManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +15,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -23,21 +27,43 @@ import androidx.compose.ui.unit.dp
 import com.example.helixapp.ui.theme.AppearancePrefs
 import com.example.helixapp.ui.theme.HelixAccent
 import com.example.helixapp.ui.theme.HelixBorder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 @Composable
 fun SettingsScreen(
     onOpenConnection: () -> Unit,
     onOpenPlayback: () -> Unit,
     onOpenAppearance: () -> Unit,
+    onOpenAdminUsers: () -> Unit,
 ) {
     val ctx = LocalContext.current
     val username = HelixPrefs.getUsername(ctx).orEmpty()
     val connected = !HelixPrefs.getSessionToken(ctx).isNullOrBlank()
     val host = HelixPrefs.getBaseUrl(ctx)
+    var role by remember { mutableStateOf<String?>(null) }
+
     val version = runCatching {
         val info = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
         info.versionName ?: "Unknown"
     }.getOrDefault("Unknown")
+
+    LaunchedEffect(connected, host) {
+        role = null
+        if (!connected) return@LaunchedEffect
+        runCatching {
+            val api = HelixClient.create(ctx, host)
+            val resp = withContext(Dispatchers.IO) { api.me() }
+            if (resp.isSuccessful) {
+                JSONObject(resp.body().orEmpty()).optString("role", "")
+            } else {
+                ""
+            }
+        }.onSuccess {
+            role = it
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -73,6 +99,18 @@ fun SettingsScreen(
                 accentValue = true,
                 onClick = onOpenAppearance,
             )
+        }
+
+        if (role == "admin") {
+            SettingsSection("Administration") {
+                SettingsRow(
+                    title = "Users",
+                    subtitle = "Create accounts and manage server-level user access",
+                    value = "Admin",
+                    accentValue = true,
+                    onClick = onOpenAdminUsers,
+                )
+            }
         }
 
         SettingsSection("App") {
@@ -133,7 +171,11 @@ private fun SettingsRow(
                 )
             }
             if (onClick != null) {
-                Text("›", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "›",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
         Box(
