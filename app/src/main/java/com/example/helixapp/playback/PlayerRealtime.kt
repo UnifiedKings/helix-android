@@ -59,7 +59,7 @@ object PlayerRealtime {
                 for (ignored in syncRequests) {
                     val ctx = appContext ?: continue
                     if (HelixPrefs.getSessionToken(ctx).isNullOrBlank()) continue
-                    runCatching { HelixTransport.refreshAndSync(ctx) }
+                    runCatching { PlayerCommandCoordinator.syncFromBackend(ctx) }
                         .onFailure { Log.w(TAG, "Realtime player sync failed", it) }
                 }
             }

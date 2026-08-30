@@ -5,12 +5,8 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSession.ConnectionResult
 import androidx.media3.session.SessionResult
-import com.example.helixapp.HelixClient
-import com.example.helixapp.HelixPrefs
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 /**
  * Media3 callback wiring lockscreen / headset / notification controls to Helix backend.
  *
@@ -51,61 +47,35 @@ class HelixSessionCallback(
     ): Int {
         when (playerCommand) {
             Player.COMMAND_PLAY_PAUSE -> {
-                // Helix is the source of truth. Always re-sync before resuming rather than letting
-                // Media3 immediately resume whatever item it happens to have cached locally.
-                //
-                // This matters after the app has been idle/backgrounded for a while: Android may
-                // still have an old stream positioned at (or near) EOF. If Media3 resumes that item
-                // first, its natural-ended callback can advance Helix to the next queue entry
-                // before the backend state has been applied.
-                if (player.isPlaying) {
-                    scope.launch {
-                        runCatching {
-                            player.pause()
-                            val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                            withContext(Dispatchers.IO) { api.pause() }
-                        }.onFailure {
-                            Log.e("HELIX_PLAYER", "Pause command failed", it)
+                scope.launch {
+                    runCatching {
+                        if (player.isPlaying) {
+                            PlayerCommandCoordinator.pause(ctx)
+                        } else {
+                            PlayerCommandCoordinator.resume(ctx)
                         }
-                    }
-                } else {
-                    scope.launch {
-                        runCatching {
-                            // Fetch backend truth first and force Media3 to reload the current
-                            // Helix queue item. refreshAndSync() also applies backend play/pause.
-                            HelixTransport.refreshAndSync(ctx, forceLoadStream = true)
-                            val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                            withContext(Dispatchers.IO) { api.resume() }
-
-                            // The state we fetched may have been paused, so explicitly start the
-                            // freshly loaded current item only after the backend resume succeeds.
-                            player.play()
-                            HelixTransport.markInitialSynced()
-                        }.onFailure {
-                            Log.e("HELIX_PLAYER", "Play command failed", it)
-                        }
+                    }.onFailure {
+                        Log.e("HELIX_PLAYER", "Play/pause command failed", it)
+                        // Repair the local session from authoritative backend state even if a
+                        // transport request failed part-way through.
+                        runCatching { PlayerCommandCoordinator.syncFromBackend(ctx, forceLoadStream = true) }
                     }
                 }
 
-                // Consume the command. If we returned RESULT_SUCCESS, Media3 would also apply play
-                // immediately, which recreates the stale-item/skip race described above.
+                // Consume the command. Media3 must not independently mutate the local player;
+                // the coordinator applies the backend result after the command completes.
                 return SessionResult.RESULT_ERROR_NOT_SUPPORTED
             }
             Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
             Player.COMMAND_SEEK_TO_NEXT -> {
-                // Match the in-app Now Playing controls:
-                // - Call backend /api/playback/next
-                // - Force a refreshAndSync() so local playback follows backend truth
                 scope.launch {
                     runCatching {
-                        val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                        withContext(Dispatchers.IO) { api.next() }
-                        HelixTransport.refreshAndSync(ctx, forceLoadStream = true)
+                        PlayerCommandCoordinator.next(ctx)
                     }.onFailure {
                         Log.e("HELIX_PLAYER", "Next command failed", it)
+                        runCatching { PlayerCommandCoordinator.syncFromBackend(ctx, forceLoadStream = true) }
                     }
                 }
-                // Consume so Media3 doesn't also advance the local queue (which can desync).
                 return SessionResult.RESULT_ERROR_NOT_SUPPORTED
             }
             Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
@@ -124,14 +94,14 @@ class HelixSessionCallback(
                     player.seekTo(0L)
                     return SessionResult.RESULT_ERROR_NOT_SUPPORTED
                 }
-                // <= 3s: move backend queue pointer.
+                // <= 3s: move the backend queue pointer. This shares the same serialization
+                // gate as Next, Play/Pause, and websocket-driven Media3 syncs.
                 scope.launch {
                     runCatching {
-                        val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                        withContext(Dispatchers.IO) { api.prev() }
-                        HelixTransport.refreshAndSync(ctx, forceLoadStream = true)
+                        PlayerCommandCoordinator.previous(ctx)
                     }.onFailure {
                         Log.e("HELIX_PLAYER", "Previous command failed", it)
+                        runCatching { PlayerCommandCoordinator.syncFromBackend(ctx, forceLoadStream = true) }
                     }
                 }
                 // Consume so Media3 doesn't also advance the local queue (which can desync).
