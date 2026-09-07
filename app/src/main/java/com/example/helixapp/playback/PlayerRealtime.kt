@@ -43,6 +43,7 @@ object PlayerRealtime {
     @Volatile private var lastSequence = 0L
     @Volatile private var lastQueueItemId: String? = null
     @Volatile private var lastIsPlaying: Boolean? = null
+    @Volatile private var lastCurrentWasQueued: Boolean? = null
 
     private var reconnectJob: Job? = null
     private var pingJob: Job? = null
@@ -68,9 +69,6 @@ object PlayerRealtime {
             return
         }
 
-        // Login, logout, or server URL changes should not leave an open socket attached to
-        // the previous session/server. HelixClient.create() is called immediately after those
-        // changes, so this also makes the switch happen without waiting for the next ping.
         if (currentKey != activeConnectionKey) {
             reconnectNow()
         }
@@ -86,6 +84,7 @@ object PlayerRealtime {
         lastSequence = 0L
         lastQueueItemId = null
         lastIsPlaying = null
+        lastCurrentWasQueued = null
         val old = socket
         socket = null
         old?.close(1000, "Helix connection changed")
@@ -169,8 +168,6 @@ object PlayerRealtime {
             lastSequence = seq
         }
 
-        // All player.state events can affect an open queue, even when the current song did not
-        // change (append/remove/reorder). Let screens refresh from the authoritative backend.
         RefreshSignals.bumpPlayer()
 
         val now = state.optJSONObject("now_playing")
@@ -179,12 +176,40 @@ object PlayerRealtime {
             ?.takeIf { it.isNotBlank() }
         val isPlaying = state.optBoolean("is_playing", false)
 
-        // Media3 only needs a transport sync if playback identity/state actually changed.
-        // Queue-only updates are handled by RefreshSignals without reloading the audio stream.
-        val transportChanged = queueItemId != lastQueueItemId || isPlaying != lastIsPlaying
+        // A queue rebuild can temporarily leave now_playing pointing at an item that has
+        // already been removed from the queue. The queue-item ID may therefore remain the
+        // same even though the transport is now invalid. Treat that as a transport change
+        // so HelixTransport can reject/clear the orphaned Media3 item immediately.
+        val queue = state.optJSONArray("queue")
+        var currentIsQueued = queueItemId == null
+        if (queueItemId != null && queue != null) {
+            currentIsQueued = false
+            for (i in 0 until queue.length()) {
+                val item = queue.optJSONObject(i) ?: continue
+                val itemId = item.optString("id", item.optString("queue_item_id", ""))
+                if (itemId == queueItemId) {
+                    currentIsQueued = true
+                    break
+                }
+            }
+        }
+
+        val transportChanged =
+            queueItemId != lastQueueItemId ||
+            isPlaying != lastIsPlaying ||
+            currentIsQueued != lastCurrentWasQueued ||
+            (queueItemId != null && !currentIsQueued)
+
         lastQueueItemId = queueItemId
         lastIsPlaying = isPlaying
-        if (transportChanged) syncRequests.trySend(Unit)
+        lastCurrentWasQueued = currentIsQueued
+
+        if (transportChanged) {
+            if (queueItemId != null && !currentIsQueued) {
+                Log.w(TAG, "Realtime state has orphan now_playing=$queueItemId; forcing transport sync")
+            }
+            syncRequests.trySend(Unit)
+        }
     }
 
     @Synchronized
@@ -201,7 +226,6 @@ object PlayerRealtime {
                     break
                 }
 
-                // Match the browser hook. Helix accepts a text ping and keeps the connection alive.
                 if (!webSocket.send("ping")) {
                     webSocket.cancel()
                     break

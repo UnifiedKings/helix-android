@@ -11,25 +11,27 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.common.ForwardingPlayer
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
-import com.example.helixapp.MainActivity
-import com.example.helixapp.HelixPrefs
 import com.example.helixapp.HelixClient
+import com.example.helixapp.HelixPrefs
+import com.example.helixapp.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 class PlaybackService : MediaSessionService() {
 
@@ -37,8 +39,9 @@ class PlaybackService : MediaSessionService() {
 
     private var session: MediaSession? = null
     private lateinit var player: ExoPlayer
-
     private lateinit var httpFactory: DefaultHttpDataSource.Factory
+
+    @Volatile private var closingFromTaskRemoval = false
 
     @Volatile private var lastEndedAtMs: Long = 0L
     @Volatile private var lastEndedUri: String? = null
@@ -53,8 +56,6 @@ class PlaybackService : MediaSessionService() {
             Log.i("HELIX_PLAYER", "Audio output disconnected; pausing playback")
             player.pause()
 
-            // Keep the backend player state aligned with the local pause. Without this, the
-            // next state refresh can see is_playing=true and immediately resume playback.
             scope.launch {
                 runCatching {
                     val api = HelixClient.create(
@@ -72,8 +73,6 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
 
-        // Force a one-time backend sync before the first play after process start.
-        // Otherwise the player may resume a stale, previously loaded media item.
         HelixTransport.resetSyncState()
 
         createNotificationChannel()
@@ -87,16 +86,18 @@ class PlaybackService : MediaSessionService() {
                 DefaultMediaSourceFactory(this).setDataSourceFactory(httpFactory)
             )
             .build()
-        val sessionPlayer: Player = HelixForwardingPlayer(player)
+
+        // Media3 may receive an is_playing=true snapshot almost immediately after the app opens.
+        // Block play commands until the backend has first been forced into a paused state.
+        val sessionPlayer: Player = HelixForwardingPlayer(player) {
+            !closingFromTaskRemoval
+        }
 
         session = MediaSession.Builder(this, sessionPlayer)
             .setCallback(HelixSessionCallback(this, sessionPlayer, scope))
-            // Tapping the system media notification (and lockscreen card) should open Helix
-            // directly into the Now Playing tab.
             .setSessionActivity(buildNowPlayingPendingIntent())
             .build()
 
-        // Log useful state transitions + errors.
         player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 Log.d(
@@ -105,46 +106,60 @@ class PlaybackService : MediaSessionService() {
                 )
 
                 if (state == Player.STATE_ENDED) {
-    // ExoPlayer contains only the real current track. Natural completion therefore always lands
-    // here; notify Helix so the backend advances its authoritative queue, then load the new current.
+                    val uri = player.currentMediaItem?.localConfiguration?.uri?.toString()
+                    val nowMs = SystemClock.elapsedRealtime()
+                    val dur = player.duration
+                    val pos = player.currentPosition
 
-    // Guard against tight loops if playback ends immediately (e.g., auth failures, short/invalid streams).
-    val uri = player.currentMediaItem?.localConfiguration?.uri?.toString()
-    val nowMs = SystemClock.elapsedRealtime()
-    val dur = player.duration
-    val pos = player.currentPosition
+                    val sameItemFast =
+                        uri != null &&
+                        uri == lastEndedUri &&
+                        (nowMs - lastEndedAtMs) < ENDED_COOLDOWN_MS
+                    val endedSuspiciouslyEarly =
+                        dur > 0 &&
+                        pos >= 0 &&
+                        pos < (dur - ENDED_EARLY_TOLERANCE_MS)
 
-    val sameItemFast = (uri != null && uri == lastEndedUri && (nowMs - lastEndedAtMs) < ENDED_COOLDOWN_MS)
-    val endedSuspiciouslyEarly = (dur > 0 && pos >= 0 && pos < (dur - ENDED_EARLY_TOLERANCE_MS))
+                    if (sameItemFast) {
+                        Log.w("HELIX_PLAYER", "STATE_ENDED ignored (cooldown) uri=$uri")
+                        return
+                    }
+                    if (endedSuspiciouslyEarly) {
+                        Log.w(
+                            "HELIX_PLAYER",
+                            "STATE_ENDED ignored (ended early) pos=$pos dur=$dur uri=$uri"
+                        )
+                        lastEndedAtMs = nowMs
+                        lastEndedUri = uri
+                        return
+                    }
 
-    if (sameItemFast) {
-        Log.w("HELIX_PLAYER", "STATE_ENDED ignored (cooldown) uri=$uri")
-        return
-    }
-    if (endedSuspiciouslyEarly) {
-        Log.w("HELIX_PLAYER", "STATE_ENDED ignored (ended early) pos=$pos dur=$dur uri=$uri")
-        lastEndedAtMs = nowMs
-        lastEndedUri = uri
-        return
-    }
+                    lastEndedAtMs = nowMs
+                    lastEndedUri = uri
 
-    lastEndedAtMs = nowMs
-    lastEndedUri = uri
-
-    scope.launch {
-        Log.d("HELIX_PLAYER", "STATE_ENDED -> notifying backend /api/playback/ended")
-        HelixTransport.backendEndedAndRefresh(this@PlaybackService)
-    }
-}
+                    scope.launch {
+                        Log.d(
+                            "HELIX_PLAYER",
+                            "STATE_ENDED -> notifying backend /api/playback/ended"
+                        )
+                        HelixTransport.backendEndedAndRefresh(this@PlaybackService)
+                    }
+                }
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                val uri = player.currentMediaItem?.localConfiguration?.uri?.toString().orEmpty()
-                Log.e("HELIX_PLAYER", "ExoPlayer error=${error.errorCodeName} uri=$uri", error)
+                val uri = player.currentMediaItem
+                    ?.localConfiguration
+                    ?.uri
+                    ?.toString()
+                    .orEmpty()
 
-                // Station / YT-backed tracks can return HTTP 404/503 for a few seconds while
-                // Helix is resolving the YT id or creating the progressive .part file. Treat
-                // those as a temporary stream-not-ready condition instead of a permanent failure.
+                Log.e(
+                    "HELIX_PLAYER",
+                    "ExoPlayer error=${error.errorCodeName} uri=$uri",
+                    error
+                )
+
                 if (shouldRetryTemporaryStreamError(error, uri)) {
                     if (lastStreamErrorUri != uri) {
                         lastStreamErrorUri = uri
@@ -155,13 +170,20 @@ class PlaybackService : MediaSessionService() {
                         val attempt = ++streamErrorRetryCount
                         scope.launch {
                             delay(STREAM_ERROR_RETRY_DELAY_MS * attempt)
-                            Log.w("HELIX_PLAYER", "Retrying stream after temporary HTTP error attempt=$attempt uri=$uri")
+                            Log.w(
+                                "HELIX_PLAYER",
+                                "Retrying stream after temporary HTTP error attempt=$attempt uri=$uri"
+                            )
                             refreshAuthHeaders()
                             runCatching {
                                 player.prepare()
                                 player.play()
                             }.onFailure {
-                                Log.e("HELIX_PLAYER", "Stream retry failed before ExoPlayer request", it)
+                                Log.e(
+                                    "HELIX_PLAYER",
+                                    "Stream retry failed before ExoPlayer request",
+                                    it
+                                )
                             }
                         }
                     }
@@ -170,29 +192,93 @@ class PlaybackService : MediaSessionService() {
         })
 
         registerNoisyAudioReceiver()
-
-        // Ensure our first request has correct cookie.
         refreshAuthHeaders()
+
+        // A cold service start must begin paused, but the pause handshake must finish
+        // before the MediaSession starts accepting intentional Play commands.
+        //
+        // The previous async startup gate could swallow a legitimate station/playlist Play:
+        // the backend queue would change, but Media3 would reject play() until the user
+        // pressed Play again. Keep this bounded so an unreachable server cannot hang startup.
+        player.pause()
+        runBlocking {
+            try {
+                withTimeoutOrNull(STARTUP_PAUSE_TIMEOUT_MS) {
+                    val api = HelixClient.create(
+                        this@PlaybackService,
+                        HelixPrefs.getBaseUrl(this@PlaybackService),
+                        startRealtime = false,
+                    )
+                    withContext(Dispatchers.IO) { api.pause() }
+                }
+            } catch (e: Exception) {
+                Log.w("HELIX_PLAYER", "Initial backend pause failed", e)
+            }
+        }
     }
 
-    
-override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    if (intent?.action == ACTION_REFRESH_AUTH) {
-        Log.d("HELIX_PLAYER", "Received ACTION_REFRESH_AUTH")
-        refreshAuthHeaders()
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_REFRESH_AUTH) {
+            Log.d("HELIX_PLAYER", "Received ACTION_REFRESH_AUTH")
+            refreshAuthHeaders()
+        }
+        return super.onStartCommand(intent, flags, startId)
     }
-    return super.onStartCommand(intent, flags, startId)
-}
 
-override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession {
-    return requireNotNull(session)
-}
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.i("HELIX_PLAYER", "App task removed; stopping Helix playback")
+
+        closingFromTaskRemoval = true
+
+        if (::player.isInitialized) {
+            // Remove the old item immediately, not just its playing state. Android may keep
+            // this service alive briefly after the task is swiped away, and a very fast reopen
+            // can otherwise reconnect to the same MediaSession and inherit stale metadata/art
+            // from the previous track even though the backend queue has already changed.
+            player.pause()
+            player.stop()
+            player.clearMediaItems()
+        }
+
+        // Release the app-owned controller so its binding cannot keep the service alive
+        // after the task is gone.
+        PlaybackController.release()
+
+        scope.launch {
+            try {
+                withTimeoutOrNull(TASK_REMOVAL_PAUSE_TIMEOUT_MS) {
+                    val api = HelixClient.create(
+                        this@PlaybackService,
+                        HelixPrefs.getBaseUrl(this@PlaybackService),
+                        startRealtime = false,
+                    )
+                    withContext(Dispatchers.IO) { api.pause() }
+                }
+            } catch (e: Exception) {
+                Log.w("HELIX_PLAYER", "Backend pause during task removal failed", e)
+            } finally {
+                stopSelf()
+            }
+        }
+
+        super.onTaskRemoved(rootIntent)
+    }
+
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession {
+        return requireNotNull(session)
+    }
 
     override fun onDestroy() {
         unregisterNoisyAudioReceiver()
+
+        if (::player.isInitialized) {
+            player.pause()
+            player.release()
+        }
+
         session?.release()
         session = null
-        player.release()
+
         scope.cancel()
         super.onDestroy()
     }
@@ -200,7 +286,11 @@ override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSes
     private fun registerNoisyAudioReceiver() {
         val filter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(noisyAudioReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(
+                noisyAudioReceiver,
+                filter,
+                Context.RECEIVER_NOT_EXPORTED
+            )
         } else {
             @Suppress("DEPRECATION")
             registerReceiver(noisyAudioReceiver, filter)
@@ -214,11 +304,18 @@ override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSes
     fun refreshAuthHeaders() {
         val token = HelixPrefs.getSessionToken(this).orEmpty()
         if (token.isBlank()) {
-            Log.w("HELIX_PLAYER", "No mr_session token available; stream requests may 401")
+            Log.w(
+                "HELIX_PLAYER",
+                "No mr_session token available; stream requests may 401"
+            )
             return
         }
 
-        Log.d("HELIX_PLAYER", "Setting stream Cookie header (len=${token.length})")
+        Log.d(
+            "HELIX_PLAYER",
+            "Setting stream Cookie header (len=${token.length})"
+        )
+
         httpFactory.setDefaultRequestProperties(
             mapOf(
                 "Cookie" to "mr_session=$token",
@@ -226,8 +323,10 @@ override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSes
         )
     }
 
-
-    private fun shouldRetryTemporaryStreamError(error: PlaybackException, uri: String): Boolean {
+    private fun shouldRetryTemporaryStreamError(
+        error: PlaybackException,
+        uri: String,
+    ): Boolean {
         if (!uri.contains("/api/stream/")) return false
         if (error.errorCodeName != "ERROR_CODE_IO_BAD_HTTP_STATUS") return false
 
@@ -258,7 +357,6 @@ override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSes
 
     private fun buildNowPlayingPendingIntent(): PendingIntent {
         val intent = Intent(this, MainActivity::class.java).apply {
-            // Ensure we reuse the existing activity when possible.
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(MainActivity.EXTRA_OPEN_NOW_PLAYING, true)
         }
@@ -269,17 +367,24 @@ override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSes
         return PendingIntent.getActivity(this, 0, intent, flags)
     }
 
-    
-    /**
-     * A thin Player wrapper that advertises fake previous/next transport capability to Android.
-     *
-     * ExoPlayer itself contains only one real media item. The fake capabilities exist solely so
-     * lock-screen, notification, headset, and other Media3 controllers show Previous/Next. The
-     * corresponding commands are consumed by HelixSessionCallback and forwarded to the backend.
-     */
-    private class HelixForwardingPlayer(delegate: Player) : ForwardingPlayer(delegate) {
+    private class HelixForwardingPlayer(
+        delegate: Player,
+        private val canPlay: () -> Boolean,
+    ) : ForwardingPlayer(delegate) {
 
         private fun canExposeTransport(): Boolean = currentMediaItem != null
+
+        override fun play() {
+            if (!canPlay()) {
+                Log.d(
+                    "HELIX_PLAYER",
+                    "Ignoring Media3 play while task removal is in progress"
+                )
+                super.pause()
+                return
+            }
+            super.play()
+        }
 
         override fun hasNextMediaItem(): Boolean {
             return super.hasNextMediaItem() || canExposeTransport()
@@ -290,7 +395,9 @@ override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSes
         }
 
         override fun isCommandAvailable(command: Int): Boolean {
-            if (canExposeTransport() && (
+            if (
+                canExposeTransport() &&
+                (
                     command == Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM ||
                     command == Player.COMMAND_SEEK_TO_NEXT ||
                     command == Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM ||
@@ -316,16 +423,18 @@ override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSes
         }
     }
 
-companion object {
-    const val CHANNEL_ID = "helix_playback"
+    companion object {
+        const val CHANNEL_ID = "helix_playback"
 
-    // When the user logs in/out, the session cookie changes; streaming requests need to update headers.
-    const val ACTION_REFRESH_AUTH = "com.example.helixapp.action.REFRESH_AUTH"
+        const val ACTION_REFRESH_AUTH =
+            "com.example.helixapp.action.REFRESH_AUTH"
 
-    // Avoid spamming the backend if ExoPlayer reports ENDED in a tight loop.
-    private const val ENDED_COOLDOWN_MS = 1500L
-    private const val ENDED_EARLY_TOLERANCE_MS = 1000L
-    private const val MAX_STREAM_ERROR_RETRIES = 8
-    private const val STREAM_ERROR_RETRY_DELAY_MS = 1500L
-}
+        private const val ENDED_COOLDOWN_MS = 1500L
+        private const val ENDED_EARLY_TOLERANCE_MS = 1000L
+        private const val MAX_STREAM_ERROR_RETRIES = 8
+        private const val STREAM_ERROR_RETRY_DELAY_MS = 1500L
+
+        private const val STARTUP_PAUSE_TIMEOUT_MS = 2_000L
+        private const val TASK_REMOVAL_PAUSE_TIMEOUT_MS = 2_000L
+    }
 }

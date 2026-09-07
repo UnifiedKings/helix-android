@@ -67,6 +67,7 @@ import com.example.helixapp.ui.theme.HelixSurfaceRaised
 import com.example.helixapp.playback.HelixTransport
 import com.example.helixapp.playback.NowPlayingUi
 import com.example.helixapp.playback.PlaybackController
+import com.example.helixapp.playback.PlayerCommandCoordinator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -84,41 +85,28 @@ fun NowPlayingScreen() {
     var status by remember { mutableStateOf("Idle") }
     var loading by remember { mutableStateOf(false) }
     var now by remember { mutableStateOf<NowPlayingUi?>(null) }
-    // Station identity must come from backend playback state, not device-local prefs.
-    // Multiple Helix clients can change the active station at any time.
     var activeStationName by remember { mutableStateOf<String?>(null) }
 
-    // Player (Media3) metadata - same truth source as the lockscreen.
-    // Backend state is still fetched for IDs (likes/dislikes) and queue context.
     var metaTitle by remember { mutableStateOf<String?>(null) }
     var metaArtist by remember { mutableStateOf<String?>(null) }
     var metaAlbum by remember { mutableStateOf<String?>(null) }
     var metaArtUri by remember { mutableStateOf<String?>(null) }
     var metaMediaId by remember { mutableStateOf<String?>(null) }
-    // IDs used for likes/dislikes come directly from backend now_playing, which is authoritative across clients.
+
     var currentYtVideoId by remember { mutableStateOf<String?>(null) }
     var currentSubsonicSongId by remember { mutableStateOf<String?>(null) }
-    // IMPORTANT:
-    // The play/pause icon should reflect LOCAL playback state (Media3), not backend state.
-    // Backend state can lag behind a tap, which makes it feel like the button "didn't work"
-    // and forces multiple taps.
+
     var isPlaying by remember { mutableStateOf(false) }
     var playPauseInFlight by remember { mutableStateOf(false) }
 
-    // Likes / Dislikes (thumb up/down)
     var isLiked by remember { mutableStateOf(false) }
     var isDisliked by remember { mutableStateOf(false) }
     var ratingInFlight by remember { mutableStateOf(false) }
 
-    // Subsonic availability for the current backend track. A queue item can originate
-    // outside Subsonic and still already exist in the library, so do not infer this
-    // solely from source/subsonic_song_id; resolve it against Helix as well.
     var isInSubsonic by remember { mutableStateOf(false) }
     var subsonicAvailabilityKnown by remember { mutableStateOf(false) }
     var addToSubsonicPending by remember { mutableStateOf(false) }
 
-    // Seeking (local player only, just like the web frontend).
-    // We intentionally do NOT involve the backend for seek; the backend doesn't track position.
     var controller by remember { mutableStateOf<MediaController?>(null) }
     var positionMs by remember { mutableStateOf(0L) }
     var durationMs by remember { mutableStateOf(0L) }
@@ -153,6 +141,7 @@ fun NowPlayingScreen() {
                     activeStationName = null
                     return@launch
                 }
+
                 val body = resp.body().orEmpty()
                 val root = JSONObject(body)
                 val (nowUi, _) = HelixTransport.parseQueueFromState(body)
@@ -163,17 +152,13 @@ fun NowPlayingScreen() {
                     ?.trim()
                     ?.takeIf { it.isNotBlank() }
 
-                // The backend current track is authoritative for Helix identity.
-                // Do not require the local Media3 mediaId to match: playback may have been
-                // started or changed by the web frontend, a lobby, or another Helix client.
                 currentYtVideoId = nowUi?.ytVideoId?.takeIf { it.isNotBlank() }
                 currentSubsonicSongId = nowUi?.subsonicSongId?.takeIf { it.isNotBlank() }
 
-                // We still parse backend is_playing for initial display, but we do NOT treat it as the source of truth.
-                // Media3 listener below will keep isPlaying updated to the actual local player state.
                 if (!isPlaying) {
                     isPlaying = runCatching { JSONObject(body).optBoolean("is_playing", false) }.getOrDefault(false)
                 }
+
                 status = if (nowUi == null) "Nothing playing" else "Done"
             } catch (e: Exception) {
                 status = "Error: ${e.javaClass.simpleName}: ${e.message}"
@@ -192,17 +177,12 @@ fun NowPlayingScreen() {
         if (!current.subsonicSongId.isNullOrBlank() || current.source.equals("subsonic", ignoreCase = true)) {
             return true
         }
+
         val title = current.title.trim()
         val artist = current.artist.trim()
         if (title.isBlank() || artist.isBlank()) return false
 
         val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-
-        // /api/subsonic/resolve caches by the caller-provided key. Never use a constant
-        // key such as "now-playing" here: a successful lookup for one song would then be
-        // reused for every later song until the backend cache expires.
-        // Use the same song:<youtube-id> key that Helix invalidates after an import when
-        // possible, and a stable text identity only as a fallback for tracks without YT IDs.
         val ytId = current.ytVideoId?.trim().orEmpty()
         val album = current.album.trim()
         val resolveKey = if (ytId.isNotBlank()) {
@@ -227,17 +207,17 @@ fun NowPlayingScreen() {
             })
             put("albums", JSONArray())
         }
+
         val body = payload.toString().toRequestBody("application/json".toMediaType())
         val resp = withContext(Dispatchers.IO) { api.subsonicResolve(body) }
         if (!resp.isSuccessful) return false
+
         return JSONObject(resp.body().orEmpty())
             .optJSONObject("songs")
             ?.optJSONObject(resolveKey)
             ?.optBoolean("available", false) == true
     }
 
-    // Reset pending import state whenever the backend advances to a different queue item,
-    // then determine whether the new current track already exists in Subsonic.
     LaunchedEffect(now?.queueItemId, now?.title, now?.artist, now?.subsonicSongId) {
         if (now == null) {
             addToSubsonicPending = false
@@ -245,15 +225,13 @@ fun NowPlayingScreen() {
             subsonicAvailabilityKnown = false
             return@LaunchedEffect
         }
+
         addToSubsonicPending = false
         subsonicAvailabilityKnown = false
         isInSubsonic = runCatching { resolveCurrentSubsonicAvailability() }.getOrDefault(false)
         subsonicAvailabilityKnown = true
     }
 
-    // After an import request is accepted, keep the action disabled and periodically ask
-    // Helix whether the current song has appeared in Subsonic. The button is only restored
-    // if the track changes (effect above) or the request itself fails.
     LaunchedEffect(addToSubsonicPending, now?.queueItemId) {
         if (!addToSubsonicPending || now == null) return@LaunchedEffect
         while (addToSubsonicPending) {
@@ -289,6 +267,7 @@ fun NowPlayingScreen() {
                     if (current.album.isNotBlank()) put("album", current.album)
                     if (current.artUrl.isNotBlank()) put("art_url", current.artUrl)
                 }
+
                 val body = payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
                 val resp = withContext(Dispatchers.IO) { api.subsonicAddTrack(body) }
                 if (!resp.isSuccessful) {
@@ -302,9 +281,6 @@ fun NowPlayingScreen() {
         }
     }
 
-    // Fetch like/dislike state from the backend current-track identity. This intentionally
-    // does not depend on metaMediaId: Media3 can be stale when another Helix client
-    // (for example the web frontend) changed the current queue item.
     LaunchedEffect(
         currentYtVideoId,
         currentSubsonicSongId,
@@ -314,6 +290,7 @@ fun NowPlayingScreen() {
     ) {
         val hasStableId = !currentYtVideoId.isNullOrBlank() || !currentSubsonicSongId.isNullOrBlank()
         val hasTextIdentity = !now?.title.isNullOrBlank() && !now?.artist.isNullOrBlank()
+
         if (!hasStableId && !hasTextIdentity) {
             isLiked = false
             isDisliked = false
@@ -330,10 +307,6 @@ fun NowPlayingScreen() {
             }
 
             suspend fun fetchLiked(): Boolean {
-                // Older Android clients could create a like keyed only by yt_video_id.
-                // Current playback often knows both identities, while the backend endpoint
-                // gives subsonic_song_id precedence when both are sent. Check each stable
-                // identity independently so those older likes still resolve correctly.
                 val subId = currentSubsonicSongId?.takeIf { it.isNotBlank() }
                 if (subId != null) {
                     val resp = withContext(Dispatchers.IO) {
@@ -354,9 +327,6 @@ fun NowPlayingScreen() {
                     }
                 }
 
-                // Legacy fallback: older app versions could create likes whose stable key
-                // was title+artist because neither media ID was available at like time.
-                // /is-liked cannot query those keys, so compare against the user's liked list.
                 val currentTitle = (now?.title ?: metaTitle ?: "").trim()
                 val currentArtist = (now?.artist ?: metaArtist ?: "").trim()
                 if (currentTitle.isNotBlank() && currentArtist.isNotBlank()) {
@@ -368,16 +338,20 @@ fun NowPlayingScreen() {
                             fun norm(v: String): String = v.trim().lowercase()
                             val wantedTitle = norm(currentTitle)
                             val wantedArtist = norm(currentArtist)
+
                             for (i in 0 until items.length()) {
                                 val item = items.optJSONObject(i) ?: continue
-                                if (norm(item.optString("title", "")) == wantedTitle &&
-                                    norm(item.optString("artist", "")) == wantedArtist) {
+                                if (
+                                    norm(item.optString("title", "")) == wantedTitle &&
+                                    norm(item.optString("artist", "")) == wantedArtist
+                                ) {
                                     return true
                                 }
                             }
                         }
                     }
                 }
+
                 return false
             }
 
@@ -401,20 +375,18 @@ fun NowPlayingScreen() {
                         return true
                     }
                 }
+
                 return false
             }
 
             isLiked = fetchLiked()
             isDisliked = fetchDisliked()
         }.onFailure {
-            // If a request fails, don't leave stale "liked" UI on screen.
             isLiked = false
             isDisliked = false
         }
     }
 
-// Keep UI play/pause state in sync with the local Media3 player.
-    // This matches the behavior you see on the lockscreen controls (which already work correctly).
     DisposableEffect(Unit) {
         var installedOn: MediaController? = null
 
@@ -427,15 +399,14 @@ fun NowPlayingScreen() {
             metaAlbum = md?.albumTitle?.toString()
             metaArtUri = md?.artworkUri?.toString()
         }
+
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlayingNow: Boolean) {
                 isPlaying = isPlayingNow
-                // If a tap initiated a change, consider it "done" once Media3 reports the result.
                 if (playPauseInFlight) playPauseInFlight = false
             }
 
             override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
-                // Update UI from the same truth source as the lockscreen: the player.
                 val md = mediaItem?.mediaMetadata
                 metaMediaId = mediaItem?.mediaId
                 metaTitle = md?.title?.toString()
@@ -443,7 +414,6 @@ fun NowPlayingScreen() {
                 metaAlbum = md?.albumTitle?.toString()
                 metaArtUri = md?.artworkUri?.toString()
 
-                // Still refresh backend state (likes/dislikes IDs, queue context).
                 scope.launch { refresh() }
             }
 
@@ -456,7 +426,6 @@ fun NowPlayingScreen() {
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED || playbackState == Player.STATE_IDLE) {
-                    // Clear any stuck in-flight state.
                     if (playPauseInFlight) playPauseInFlight = false
                 }
             }
@@ -465,10 +434,8 @@ fun NowPlayingScreen() {
         PlaybackController.get(ctx) { c ->
             installedOn = c
             controller = c
-            // Seed state immediately.
             isPlaying = c.isPlaying
             seedFromController(c)
-            // Seed seek state.
             positionMs = runCatching { c.currentPosition }.getOrDefault(0L)
             val seedDur = runCatching { c.duration }.getOrDefault(0L)
             durationMs = if (seedDur > 0) seedDur else (now?.durationMs ?: 0L)
@@ -481,89 +448,96 @@ fun NowPlayingScreen() {
         }
     }
 
-    // Update seek bar periodically from the local player.
-    //
-    // Important: ExoPlayer/Media3 can report TIME_UNSET (negative) for duration when the
-    // stream isn't fully seekable (e.g., missing HTTP Range/Content-Length). When that
-    // happens, duration becomes "unknown" and the seek bar appears broken.
-    //
-    // Helix already provides a reliable per-track duration via /api/playback/state, so we
-    // fall back to that duration to keep the seek UI functional even if the stream is
-    // temporarily non-seekable.
-    LaunchedEffect(controller) {
+    // Only local Media3 metadata for the same backend queue item may drive the UI.
+    // During close/reopen or cross-client transitions, Media3 can briefly still contain
+    // the previous item while the backend queue/current item has already changed.
+    val mediaMatchesBackend =
+        !metaMediaId.isNullOrBlank() &&
+        !now?.queueItemId.isNullOrBlank() &&
+        metaMediaId == now?.queueItemId
+
+    LaunchedEffect(controller, now?.queueItemId, metaMediaId) {
         val c = controller ?: return@LaunchedEffect
+
         while (true) {
-            // Don't fight the user's finger while scrubbing.
             if (!userSeeking) {
-                val d = runCatching { c.duration }.getOrDefault(0L)
-                val p = runCatching { c.currentPosition }.getOrDefault(0L)
-                // Media3 returns TIME_UNSET as a very negative number if duration is unknown.
-                val backendDur = now?.durationMs ?: 0L
-                durationMs = if (d > 0) d else backendDur
-                positionMs = if (p > 0) p else 0L
+                val stillMatchesBackend =
+                    !c.currentMediaItem?.mediaId.isNullOrBlank() &&
+                    !now?.queueItemId.isNullOrBlank() &&
+                    c.currentMediaItem?.mediaId == now?.queueItemId
+
+                if (stillMatchesBackend) {
+                    val d = runCatching { c.duration }.getOrDefault(0L)
+                    val p = runCatching { c.currentPosition }.getOrDefault(0L)
+                    val backendDur = now?.durationMs ?: 0L
+                    durationMs = if (d > 0) d else backendDur
+                    positionMs = if (p > 0) p else 0L
+                } else {
+                    durationMs = now?.durationMs ?: 0L
+                    positionMs = 0L
+                }
             }
+
             delay(500)
         }
     }
 
     val baseUrl = HelixPrefs.getBaseUrl(ctx)
     val art = when {
-        !metaArtUri.isNullOrBlank() -> metaArtUri.orEmpty()
+        mediaMatchesBackend && !metaArtUri.isNullOrBlank() -> metaArtUri.orEmpty()
         else -> HelixImages.absoluteUrl(baseUrl, now?.artUrl.orEmpty())
     }
 
-    android.util.Log.d("HelixArtDebug", "metaArtUri=" + (metaArtUri ?: "null") +
-        " now.artUrl=" + (now?.artUrl ?: "null") +
-        " resolvedArt=" + art)
-
-
     fun seekRelative(deltaMs: Long) {
         val c = controller ?: return
+        if (!mediaMatchesBackend) return
+
         val d = durationMs.takeIf { it > 0 } ?: (now?.durationMs ?: 0L)
         val target = (c.currentPosition + deltaMs).coerceAtLeast(0L)
             .let { if (d > 0) it.coerceAtMost(d) else it }
+
         c.seekTo(target)
         positionMs = target
     }
 
     fun togglePlayPause() {
+        if (playPauseInFlight) return
+        playPauseInFlight = true
+
         scope.launch {
             try {
-                val api = HelixClient.create(ctx, baseUrl)
-                if (playPauseInFlight) return@launch
-                playPauseInFlight = true
+                // Use the same serialized command path as the notification/lockscreen controls.
+                // The old in-app implementation duplicated pause/resume logic and could race
+                // PlayerRealtime, leaving the tap apparently ignored while the system controls
+                // still worked.
+                //
+                // Decide from the actual MediaController state at tap time, not the Compose
+                // mirror, because the UI state can lag a Media3 transition by a frame.
+                val actuallyPlaying = controller?.isPlaying ?: isPlaying
 
-                if (isPlaying) {
-                    PlaybackController.pause(ctx)
-                    withContext(Dispatchers.IO) { api.pause() }
+                if (actuallyPlaying) {
+                    // Pause locally immediately for responsive UI/audio, then let the coordinator
+                    // commit backend truth and re-sync Media3.
+                    controller?.pause()
+                    isPlaying = false
+                    PlayerCommandCoordinator.pause(ctx)
                 } else {
-                    // Cold-start fix:
-                    // On a fresh process start, the Media3 timeline may be empty. If we call
-                    // PlaybackController.resume() before we've loaded a horizon playlist,
-                    // the subsequent refreshAndSync() can overwrite the timeline and PAUSE,
-                    // making the first Play tap appear to do nothing.
-                    //
-                    // Solution: ask the backend to resume first, then refreshAndSync() so
-                    // the horizon playlist loads with autoplay=true (backend is_playing).
-                    // This ensures the first tap reliably starts playback.
+                    PlayerCommandCoordinator.resume(ctx)
+                }
 
-                    val resumeOk = runCatching {
-                        withContext(Dispatchers.IO) { api.resume() }
-                    }.isSuccess
-
-                    HelixTransport.refreshAndSync(ctx, forceLoadStream = true)
-
-                    // Best-effort: if the backend resume failed or state lagged, force local play.
-                    if (!resumeOk) {
-                        PlaybackController.resume(ctx)
-                    }
-
-                    if (com.example.helixapp.playback.HelixTransport.needsInitialSync) {
-                        com.example.helixapp.playback.HelixTransport.markInitialSynced()
-                    }
+                // Re-seed the visible state from the real controller after the serialized command.
+                controller?.let { c ->
+                    isPlaying = c.isPlaying
                 }
             } catch (_: Exception) {
-                // ignore
+                // A failed command can leave our optimistic pause state wrong. Re-read backend /
+                // Media3 truth instead of requiring the user to recover via the system controls.
+                runCatching {
+                    PlayerCommandCoordinator.syncFromBackend(ctx, forceLoadStream = true)
+                }
+                controller?.let { c ->
+                    isPlaying = c.isPlaying
+                }
             } finally {
                 playPauseInFlight = false
             }
@@ -571,16 +545,38 @@ fun NowPlayingScreen() {
     }
 
     fun rateLike() {
-        // Use backend IDs resolved for the currently playing mediaId.
         if (currentYtVideoId.isNullOrBlank() && currentSubsonicSongId.isNullOrBlank()) return
 
-        // Prefer player metadata (same truth source as lockscreen) for display fields.
-        val title = (metaTitle ?: now?.title ?: "").trim()
-        val artist = (metaArtist ?: now?.artist ?: "").trim()
-        val album = (metaAlbum ?: now?.album ?: "").trim()
-        val artUrl = (now?.artUrl ?: metaArtUri ?: "").trim()
+        val title = (
+            (if (mediaMatchesBackend) metaTitle else now?.title)
+                ?: now?.title
+                ?: ""
+        ).trim()
+
+        val artist = (
+            (if (mediaMatchesBackend) metaArtist else now?.artist)
+                ?: now?.artist
+                ?: ""
+        ).trim()
+
+        val album = (
+            (if (mediaMatchesBackend) metaAlbum else now?.album)
+                ?: now?.album
+                ?: ""
+        ).trim()
+
+        val artUrl = (
+            (if (mediaMatchesBackend) metaArtUri else now?.artUrl)
+                ?: now?.artUrl
+                ?: ""
+        ).trim()
+
         val src = (now?.source ?: "").trim()
-        val dur = (if (durationMs > 0) durationMs else (now?.durationMs ?: 0L))
+        val dur = if (mediaMatchesBackend && durationMs > 0) {
+            durationMs
+        } else {
+            now?.durationMs ?: 0L
+        }
 
         scope.launch {
             val prevLiked = isLiked
@@ -588,6 +584,7 @@ fun NowPlayingScreen() {
             ratingInFlight = true
             isLiked = !prevLiked
             if (!prevLiked) isDisliked = false
+
             try {
                 val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
                 val mt = "application/json; charset=utf-8".toMediaType()
@@ -602,6 +599,7 @@ fun NowPlayingScreen() {
                     .put("subsonic_song_id", currentSubsonicSongId)
                     .toString()
                     .toRequestBody(mt)
+
                 withContext(Dispatchers.IO) { api.likesToggle(payload) }
             } catch (_: Exception) {
                 isLiked = prevLiked
@@ -615,12 +613,36 @@ fun NowPlayingScreen() {
     fun rateDislike() {
         if (currentYtVideoId.isNullOrBlank() && currentSubsonicSongId.isNullOrBlank()) return
 
-        val title = (metaTitle ?: now?.title ?: "").trim()
-        val artist = (metaArtist ?: now?.artist ?: "").trim()
-        val album = (metaAlbum ?: now?.album ?: "").trim()
-        val artUrl = (now?.artUrl ?: metaArtUri ?: "").trim()
+        val title = (
+            (if (mediaMatchesBackend) metaTitle else now?.title)
+                ?: now?.title
+                ?: ""
+        ).trim()
+
+        val artist = (
+            (if (mediaMatchesBackend) metaArtist else now?.artist)
+                ?: now?.artist
+                ?: ""
+        ).trim()
+
+        val album = (
+            (if (mediaMatchesBackend) metaAlbum else now?.album)
+                ?: now?.album
+                ?: ""
+        ).trim()
+
+        val artUrl = (
+            (if (mediaMatchesBackend) metaArtUri else now?.artUrl)
+                ?: now?.artUrl
+                ?: ""
+        ).trim()
+
         val src = (now?.source ?: "").trim()
-        val dur = (if (durationMs > 0) durationMs else (now?.durationMs ?: 0L))
+        val dur = if (mediaMatchesBackend && durationMs > 0) {
+            durationMs
+        } else {
+            now?.durationMs ?: 0L
+        }
 
         scope.launch {
             val prevLiked = isLiked
@@ -628,6 +650,7 @@ fun NowPlayingScreen() {
             ratingInFlight = true
             isDisliked = !prevDisliked
             if (!prevDisliked) isLiked = false
+
             try {
                 val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
                 val mt = "application/json; charset=utf-8".toMediaType()
@@ -642,6 +665,7 @@ fun NowPlayingScreen() {
                     .put("subsonic_song_id", currentSubsonicSongId)
                     .toString()
                     .toRequestBody(mt)
+
                 withContext(Dispatchers.IO) { api.dislikesToggle(payload) }
             } catch (_: Exception) {
                 isLiked = prevLiked
@@ -652,15 +676,12 @@ fun NowPlayingScreen() {
         }
     }
 
-// Seek bar (local).
     val safeDur = durationMs.coerceAtLeast(0L)
     val safePos = (if (userSeeking) seekTargetMs else positionMs)
         .coerceIn(0L, if (safeDur > 0) safeDur else Long.MAX_VALUE)
     val remainingMs = if (safeDur > 0) (safeDur - safePos).coerceAtLeast(0L) else 0L
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // Keep the Now Playing page deliberately quiet. The queue is not rendered here at all;
-        // NowPlayingWithQueueSheet owns the swipe-up queue drawer.
         if (art.isNotBlank()) {
             AsyncImage(
                 model = HelixImages.request(ctx, art),
@@ -672,6 +693,7 @@ fun NowPlayingScreen() {
                     .alpha(0.12f),
             )
         }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -711,8 +733,18 @@ fun NowPlayingScreen() {
 
                 Spacer(Modifier.height(18.dp))
 
-                val displayTitle = metaTitle?.takeIf { it.isNotBlank() } ?: now?.title ?: "Nothing playing"
-                val displayArtist = metaArtist?.takeIf { it.isNotBlank() } ?: now?.artist
+                val displayTitle = if (mediaMatchesBackend) {
+                    metaTitle?.takeIf { it.isNotBlank() } ?: now?.title ?: "Nothing playing"
+                } else {
+                    now?.title ?: "Nothing playing"
+                }
+
+                val displayArtist = if (mediaMatchesBackend) {
+                    metaArtist?.takeIf { it.isNotBlank() } ?: now?.artist
+                } else {
+                    now?.artist
+                }
+
                 val stationName = activeStationName
 
                 Text(
@@ -773,10 +805,15 @@ fun NowPlayingScreen() {
                                     modifier = Modifier.size(16.dp),
                                 )
                             }
+
                             Text(
                                 text = if (isInSubsonic) "In Subsonic" else "Not in Subsonic",
                                 style = MaterialTheme.typography.labelLarge,
-                                color = if (isInSubsonic) androidx.compose.ui.graphics.Color(0xFF35C759) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = if (isInSubsonic) {
+                                    androidx.compose.ui.graphics.Color(0xFF35C759)
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
                             )
                         }
 
@@ -791,6 +828,7 @@ fun NowPlayingScreen() {
                                         .height(26.dp)
                                         .background(HelixBorder.copy(alpha = 0.8f))
                                 )
+
                                 if (addToSubsonicPending) {
                                     OutlinedButton(
                                         onClick = { },
@@ -826,8 +864,6 @@ fun NowPlayingScreen() {
 
                 Spacer(Modifier.height(10.dp))
 
-                // Deliberately put dislike and like at opposite screen edges. Rating actions are
-                // destructive enough that adjacent thumb buttons are too easy to mis-tap.
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -836,20 +872,22 @@ fun NowPlayingScreen() {
                     IconButton(
                         enabled = (now != null) && !ratingInFlight,
                         onClick = { rateDislike() },
-                        // Keep a generous touch target without drawing a button container.
                         modifier = Modifier.size(54.dp),
                     ) {
                         Icon(
                             imageVector = if (isDisliked) Icons.Filled.ThumbDown else Icons.Outlined.ThumbDown,
                             contentDescription = "Dislike",
-                            tint = if (isDisliked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            tint = if (isDisliked) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
                         )
                     }
 
                     IconButton(
                         enabled = (now != null) && !ratingInFlight,
                         onClick = { rateLike() },
-                        // Keep a generous touch target without drawing a button container.
                         modifier = Modifier.size(54.dp),
                     ) {
                         Icon(
@@ -871,7 +909,7 @@ fun NowPlayingScreen() {
                     },
                     onValueChangeFinished = {
                         val c = controller
-                        if (c != null && safeDur > 0) {
+                        if (c != null && safeDur > 0 && mediaMatchesBackend) {
                             val target = seekTargetMs.coerceIn(0L, safeDur)
                             c.seekTo(target)
                             positionMs = target
@@ -879,7 +917,7 @@ fun NowPlayingScreen() {
                         userSeeking = false
                     },
                     valueRange = if (safeDur > 0) 0f..safeDur.toFloat() else 0f..0f,
-                    enabled = safeDur > 0,
+                    enabled = safeDur > 0 && mediaMatchesBackend,
                     modifier = Modifier.fillMaxWidth(),
                 )
 
@@ -906,6 +944,16 @@ fun NowPlayingScreen() {
                     IconButton(
                         onClick = {
                             PlaybackController.get(ctx) { c ->
+                                if (!mediaMatchesBackend) {
+                                    scope.launch {
+                                        runCatching {
+                                            HelixTransport.refreshAndSync(ctx, forceLoadStream = true)
+                                            refresh()
+                                        }
+                                    }
+                                    return@get
+                                }
+
                                 val elapsedMs = c.currentPosition
                                 if (elapsedMs > 3_000L) {
                                     c.seekTo(0)
@@ -925,13 +973,15 @@ fun NowPlayingScreen() {
                         },
                         modifier = Modifier.size(56.dp),
                     ) {
-                        Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", modifier = Modifier.size(34.dp))
+                        Icon(
+                            Icons.Default.SkipPrevious,
+                            contentDescription = "Previous",
+                            modifier = Modifier.size(34.dp)
+                        )
                     }
 
                     Surface(
                         color = MaterialTheme.colorScheme.surface,
-                        // Make the transport state readable even before looking at the icon:
-                        // paused uses a circle, while actively playing uses a rounded square.
                         shape = if (isPlaying) RoundedCornerShape(20.dp) else CircleShape,
                         border = BorderStroke(1.dp, HelixAccent),
                         shadowElevation = 8.dp,
@@ -964,17 +1014,23 @@ fun NowPlayingScreen() {
                         },
                         modifier = Modifier.size(56.dp),
                     ) {
-                        Icon(Icons.Default.SkipNext, contentDescription = "Next", modifier = Modifier.size(34.dp))
+                        Icon(
+                            Icons.Default.SkipNext,
+                            contentDescription = "Next",
+                            modifier = Modifier.size(34.dp)
+                        )
                     }
                 }
 
-                // Intentionally no queue button, queue preview, shuffle, output selector, equalizer,
-                // or sleep timer here. The queue is a gesture-only drawer from this screen.
                 Spacer(Modifier.height(8.dp))
 
                 if (loading) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                } else if (status.startsWith("Error") || status.startsWith("Failed") || status.startsWith("Not logged")) {
+                } else if (
+                    status.startsWith("Error") ||
+                    status.startsWith("Failed") ||
+                    status.startsWith("Not logged")
+                ) {
                     Text(
                         status,
                         style = MaterialTheme.typography.bodySmall,

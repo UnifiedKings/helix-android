@@ -10,6 +10,7 @@ import retrofit2.converter.scalars.ScalarsConverterFactory
 
 object HelixClient {
     private const val COOKIE_NAME = "mr_session"
+
     /** Shared OkHttpClient for both Retrofit and Coil (covers that require auth cookie). */
     fun okHttpClient(context: Context): OkHttpClient {
         val logging = HttpLoggingInterceptor().apply {
@@ -20,6 +21,7 @@ object HelixClient {
             .addInterceptor(logging)
             .build()
     }
+
     private fun authCookieInterceptor(context: Context): Interceptor {
         return Interceptor { chain ->
             val token = HelixPrefs.getSessionToken(context)
@@ -33,11 +35,15 @@ object HelixClient {
             chain.proceed(req)
         }
     }
-    fun create(context: Context, baseUrl: String): HelixApi {
-        // Start the same realtime player feed used by the web frontend. It is process-wide,
-        // so subsequent API clients simply verify that the connection still matches the
-        // current Helix URL/session.
-        PlayerRealtime.ensureStarted(context.applicationContext)
+
+    fun create(
+        context: Context,
+        baseUrl: String,
+        startRealtime: Boolean = true,
+    ): HelixApi {
+        if (startRealtime) {
+            PlayerRealtime.ensureStarted(context.applicationContext)
+        }
 
         val okHttp = okHttpClient(context)
         val normalized = baseUrl.trim().trimEnd('/') + "/"

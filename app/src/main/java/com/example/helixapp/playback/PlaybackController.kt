@@ -12,24 +12,14 @@ import androidx.media3.session.SessionToken
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
-import java.util.concurrent.Executors
 
 object PlaybackController {
 
-    // ID3/APIC picture type 3 means front cover. Define it locally because
-    // older Media3 versions do not expose C.PICTURE_TYPE_FRONT_COVER.
     private const val PICTURE_TYPE_FRONT_COVER = 3
 
     @Volatile
     private var controller: MediaController? = null
 
-    private val direct = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "helix-media3-controller").apply { isDaemon = true }
-    }
-
-    /**
-     * Suspends until the MediaController is ready.
-     */
     suspend fun awaitController(ctx: Context): MediaController {
         val existing = controller
         if (existing != null) return existing
@@ -51,14 +41,6 @@ object PlaybackController {
         return Snapshot(c.currentMediaItem?.mediaId, c.isPlaying)
     }
 
-    /**
-     * Wait until the user can plausibly hear audio for the *new* request.
-     *
-     * If audio was already playing when the request started, we wait for a media item transition
-     * (mediaId change) OR (as a fallback) for the player to report READY while playing.
-     *
-     * If audio was NOT playing, we just wait for isPlaying to become true.
-     */
     suspend fun awaitAudibleStart(
         ctx: Context,
         startSnapshot: Snapshot,
@@ -66,10 +48,15 @@ object PlaybackController {
     ): Boolean {
         val c = awaitController(ctx)
 
-        // Fast path.
         val nowId = c.currentMediaItem?.mediaId
         if (!startSnapshot.isPlaying && c.isPlaying) return true
-        if (startSnapshot.isPlaying && startSnapshot.mediaId != null && nowId != null && nowId != startSnapshot.mediaId && c.isPlaying) return true
+        if (
+            startSnapshot.isPlaying &&
+            startSnapshot.mediaId != null &&
+            nowId != null &&
+            nowId != startSnapshot.mediaId &&
+            c.isPlaying
+        ) return true
 
         return withTimeoutOrNull(timeoutMs) {
             var done = false
@@ -82,7 +69,11 @@ object PlaybackController {
                     }
                     if (startSnapshot.isPlaying && isPlaying) {
                         val cur = c.currentMediaItem?.mediaId
-                        if (cur != null && startSnapshot.mediaId != null && cur != startSnapshot.mediaId) {
+                        if (
+                            cur != null &&
+                            startSnapshot.mediaId != null &&
+                            cur != startSnapshot.mediaId
+                        ) {
                             done = true
                         }
                     }
@@ -92,8 +83,13 @@ object PlaybackController {
                     if (done) return
                     if (startSnapshot.isPlaying) {
                         val cur = mediaItem?.mediaId
-                        if (cur != null && startSnapshot.mediaId != null && cur != startSnapshot.mediaId) {
-                            if (c.isPlaying) done = true
+                        if (
+                            cur != null &&
+                            startSnapshot.mediaId != null &&
+                            cur != startSnapshot.mediaId &&
+                            c.isPlaying
+                        ) {
+                            done = true
                         }
                     }
                 }
@@ -106,7 +102,11 @@ object PlaybackController {
                             return
                         }
                         val cur = c.currentMediaItem?.mediaId
-                        if (startSnapshot.mediaId == null || cur == null || cur != startSnapshot.mediaId) {
+                        if (
+                            startSnapshot.mediaId == null ||
+                            cur == null ||
+                            cur != startSnapshot.mediaId
+                        ) {
                             done = true
                         }
                     }
@@ -122,7 +122,11 @@ object PlaybackController {
                     }
                     if (startSnapshot.isPlaying && c.isPlaying) {
                         val cur = c.currentMediaItem?.mediaId
-                        if (startSnapshot.mediaId == null || cur == null || cur != startSnapshot.mediaId) {
+                        if (
+                            startSnapshot.mediaId == null ||
+                            cur == null ||
+                            cur != startSnapshot.mediaId
+                        ) {
                             if (c.playbackState == Player.STATE_READY) {
                                 done = true
                                 break
@@ -168,13 +172,6 @@ object PlaybackController {
         }
     }
 
-    /**
-     * Keep only the real Helix current track in Media3.
-     *
-     * Previous/next transport buttons are exposed by PlaybackService as fake capabilities. Their
-     * commands are intercepted by HelixSessionCallback and sent to the Helix backend, which remains
-     * the sole authority for queue movement.
-     */
     fun setCurrentItem(
         ctx: Context,
         current: QueueMediaItem,
@@ -186,17 +183,37 @@ object PlaybackController {
             val existingUri = c.currentMediaItem?.localConfiguration?.uri
             val desiredUri = mediaItem.localConfiguration?.uri
 
-            if (c.mediaItemCount != 1 || existingId != current.queueItemId || existingUri != desiredUri) {
+            if (
+                c.mediaItemCount != 1 ||
+                existingId != current.queueItemId ||
+                existingUri != desiredUri
+            ) {
                 Log.d(
                     "HELIX_PLAYER",
                     "setCurrentItem(): replacing Media3 timeline with current=${current.queueItemId} autoplay=$autoplay",
                 )
-                c.setMediaItem(mediaItem, /* resetPosition */ true)
+                c.setMediaItem(mediaItem, true)
                 c.prepare()
             }
 
             if (autoplay) c.play() else c.pause()
         }
+    }
+
+    fun clear(ctx: Context) {
+        get(ctx) { c ->
+            Log.d("HELIX_PLAYER", "clear(): removing stale Media3 item")
+            c.pause()
+            c.stop()
+            c.clearMediaItems()
+        }
+    }
+
+    fun release() {
+        val existing = controller ?: return
+        controller = null
+        runCatching { existing.release() }
+            .onFailure { Log.w("HELIX_PLAYER", "MediaController release failed", it) }
     }
 
     private fun QueueMediaItem.toMediaItem(): MediaItem {
@@ -209,8 +226,6 @@ object PlaybackController {
                     setArtworkUri(Uri.parse(artworkUrl))
                 }
                 artworkData?.let { bytes ->
-                    // System media controls can display embedded artwork even when
-                    // artworkUri points at an authenticated Helix/Subsonic endpoint.
                     setArtworkData(bytes, PICTURE_TYPE_FRONT_COVER)
                 }
             }

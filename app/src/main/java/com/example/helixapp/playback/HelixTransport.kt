@@ -18,15 +18,6 @@ object HelixTransport {
     @Volatile
     private var lastSourceLower: String = ""
 
-
-    /**
-     * When the app/service process starts, Media3 may still have a previously loaded media item
-     * in memory. If the backend "now_playing" has changed since then, pressing play would resume
-     * the stale local item (often the *next* queue entry).
-     *
-     * We use this flag to force a one-time refreshAndSync() before the first play after process
-     * start, keeping Android and backend aligned.
-     */
     @Volatile
     var needsInitialSync: Boolean = true
         private set
@@ -41,10 +32,7 @@ object HelixTransport {
         needsInitialSync = true
     }
 
-
     fun isStationPlayback(): Boolean {
-        // Heuristic: backend includes a 'source' string on now_playing (e.g., station context).
-        // We treat anything containing 'station' as station playback.
         return lastSourceLower.contains("station")
     }
 
@@ -52,12 +40,6 @@ object HelixTransport {
         return baseUrl.trimEnd('/') + "/api/stream/" + queueItemId
     }
 
-    /**
-     * Mirror the web frontend player behavior:
-     *  - Fetch /api/playback/state
-     *  - Load /api/stream/{id} when now_playing changes (or forced)
-     *  - Play or pause locally based on backend is_playing
-     */
     suspend fun refreshAndSync(ctx: Context, forceLoadStream: Boolean = false, forceRestart: Boolean = false) {
         val baseUrl = HelixPrefs.getBaseUrl(ctx)
         val api = HelixClient.create(ctx, baseUrl)
@@ -69,31 +51,50 @@ object HelixTransport {
             return
         }
 
-        val body = resp.body().orEmpty()
-        val state = JSONObject(body)
-
+        val state = JSONObject(resp.body().orEmpty())
         val now = state.optJSONObject("now_playing")
         if (now == null) {
-            Log.w("HELIX_PLAYER", "No now_playing in playback/state")
+            Log.w("HELIX_PLAYER", "No now_playing in playback/state; clearing local Media3 state")
+            lastNowId = null
+            lastSourceLower = ""
+            PlaybackController.clear(ctx)
             return
         }
 
-        // Backend returns PlayerQueueItem with field name "id" (not "queue_item_id").
-        // "queue_item_id" was an older client-side assumption.
         val qid = now.optString("id", now.optString("queue_item_id", ""))
         if (qid.isBlank()) {
-            Log.w("HELIX_PLAYER", "now_playing missing id")
+            Log.w("HELIX_PLAYER", "now_playing missing id; clearing local Media3 state")
+            lastNowId = null
+            lastSourceLower = ""
+            PlaybackController.clear(ctx)
+            return
+        }
+
+        val queue = state.optJSONArray("queue") ?: JSONArray()
+        var currentIsQueued = false
+        for (i in 0 until queue.length()) {
+            val item = queue.optJSONObject(i) ?: continue
+            val itemId = item.optString("id", item.optString("queue_item_id", ""))
+            if (itemId == qid) {
+                currentIsQueued = true
+                break
+            }
+        }
+
+        if (!currentIsQueued) {
+            Log.w(
+                "HELIX_PLAYER",
+                "Rejecting orphan now_playing=$qid because it is not present in backend queue; clearing Media3",
+            )
+            lastNowId = null
+            lastSourceLower = ""
+            PlaybackController.clear(ctx)
             return
         }
 
         val isPlaying = state.optBoolean("is_playing", true)
-
         lastSourceLower = now.optString("source", "").lowercase()
 
-        // Media3 owns only the real current track. Previous/next are intentionally *not* loaded
-        // into ExoPlayer. PlaybackService advertises fake previous/next capabilities to Android so
-        // system UIs show both transport buttons, and HelixSessionCallback captures those commands
-        // and forwards them to the Helix backend.
         val title = now.optString("title", "")
         val artist = now.optString("artist", "")
         val album = now.optString("album", "")
@@ -104,6 +105,7 @@ object HelixTransport {
         } else {
             null
         }
+
         val currentItem = QueueMediaItem(
             queueItemId = qid,
             url = streamUrl(baseUrl, qid),
@@ -118,7 +120,7 @@ object HelixTransport {
         lastNowId = qid
 
         if (shouldLoad) {
-            Log.d("HELIX_PLAYER", "Applying current-only Media3 item now=$qid (fake prev/next transport enabled)")
+            Log.d("HELIX_PLAYER", "Applying current-only Media3 item now=$qid")
             PlaybackController.setCurrentItem(ctx, currentItem, autoplay = isPlaying)
         } else {
             if (isPlaying) PlaybackController.resume(ctx) else PlaybackController.pause(ctx)
@@ -127,7 +129,6 @@ object HelixTransport {
         if (forceRestart) Log.d("HELIX_PLAYER", "forceRestart=true")
     }
 
-    // Backwards compatible helper used by existing screens.
     suspend fun refreshAndPlayCurrent(ctx: Context, forceRestart: Boolean = false) {
         refreshAndSync(ctx, forceLoadStream = forceRestart, forceRestart = forceRestart)
     }
@@ -142,20 +143,6 @@ object HelixTransport {
     fun parseQueueFromState(stateJson: String): Pair<NowPlayingUi?, List<QueueItemUi>> {
         val root = JSONObject(stateJson)
         val now = root.optJSONObject("now_playing")
-        val nowUi = now?.let {
-            NowPlayingUi(
-                queueItemId = it.optString("id", it.optString("queue_item_id", "")),
-                title = it.optString("title", ""),
-                artist = it.optString("artist", ""),
-                album = it.optString("album", ""),
-                artUrl = it.optString("art_url", ""),
-                durationMs = it.optLong("duration_ms", 0L),
-                source = it.optString("source", ""),
-                ytVideoId = it.optString("yt_video_id", "").ifBlank { null },
-                subsonicSongId = it.optString("subsonic_song_id", "").ifBlank { null },
-            )
-        }
-
         val arr = root.optJSONArray("queue") ?: JSONArray()
         val items = ArrayList<QueueItemUi>(arr.length())
         for (i in 0 until arr.length()) {
@@ -174,6 +161,26 @@ object HelixTransport {
                     subsonicSongId = o.optString("subsonic_song_id", "").ifBlank { null },
                 )
             )
+        }
+
+        val queuedIds = items.mapTo(hashSetOf()) { it.queueItemId }
+        val nowUi = now?.let {
+            val id = it.optString("id", it.optString("queue_item_id", ""))
+            if (id.isBlank() || id !in queuedIds) {
+                null
+            } else {
+                NowPlayingUi(
+                    queueItemId = id,
+                    title = it.optString("title", ""),
+                    artist = it.optString("artist", ""),
+                    album = it.optString("album", ""),
+                    artUrl = it.optString("art_url", ""),
+                    durationMs = it.optLong("duration_ms", 0L),
+                    source = it.optString("source", ""),
+                    ytVideoId = it.optString("yt_video_id", "").ifBlank { null },
+                    subsonicSongId = it.optString("subsonic_song_id", "").ifBlank { null },
+                )
+            }
         }
 
         return nowUi to items

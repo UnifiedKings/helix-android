@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -189,19 +190,50 @@ fun StationsScreen(
     var tuningStation by remember { mutableStateOf<StationUi?>(null) }
     var creating by remember { mutableStateOf(false) }
 
-    suspend fun waitForNowPlayingReady(timeoutMs: Long): Boolean {
+    suspend fun waitForNowPlayingReady(
+        targetStationId: String,
+        targetStationName: String,
+        timeoutMs: Long,
+    ): Boolean {
         val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
         val start = SystemClock.elapsedRealtime()
         while (SystemClock.elapsedRealtime() - start < timeoutMs) {
             val resp = withContext(Dispatchers.IO) { api.playerState() }
             if (resp.isSuccessful) {
-                val body = resp.body().orEmpty()
-                val root = JSONObject(body)
+                val root = JSONObject(resp.body().orEmpty())
+                val activeStation = root.optJSONObject("active_station")
+                val activeStationId = activeStation
+                    ?.optString("id", activeStation.optString("station_id", ""))
+                    ?.trim()
+                    .orEmpty()
+                val activeStationName = activeStation
+                    ?.optString("name", "")
+                    ?.trim()
+                    .orEmpty()
+
+                val stationMatches =
+                    (targetStationId.isNotBlank() && activeStationId == targetStationId) ||
+                    (targetStationName.isNotBlank() && activeStationName.equals(targetStationName, ignoreCase = true))
+
                 val now = root.optJSONObject("now_playing")
                 val qid = now?.optString("id", now.optString("queue_item_id", "")) ?: ""
-                if (qid.isNotBlank()) return true
+                val queue = root.optJSONArray("queue") ?: JSONArray()
+
+                var currentIsQueued = false
+                for (i in 0 until queue.length()) {
+                    val item = queue.optJSONObject(i) ?: continue
+                    val itemId = item.optString("id", item.optString("queue_item_id", ""))
+                    if (itemId == qid) {
+                        currentIsQueued = true
+                        break
+                    }
+                }
+
+                if (stationMatches && qid.isNotBlank() && currentIsQueued) {
+                    return true
+                }
             }
-            delay(750)
+            delay(250)
         }
         return false
     }
@@ -335,7 +367,11 @@ fun StationsScreen(
                                     showLoadingOverlay(
                                         "Building station…\nStations can take up to 30 seconds to load."
                                     )
-                                    val ready = waitForNowPlayingReady(timeoutMs = 30_000L)
+                                    val ready = waitForNowPlayingReady(
+                                        targetStationId = station.id,
+                                        targetStationName = station.name,
+                                        timeoutMs = 30_000L,
+                                    )
                                     if (!ready) {
                                         status = "Station took too long to load"
                                         return@launch
@@ -716,6 +752,7 @@ private fun StationCreateDialog(
     var selectedProviderType by remember(usableProviders) { mutableStateOf(usableProviders.first().stationType) }
     val selectedProvider = usableProviders.firstOrNull { it.stationType == selectedProviderType } ?: usableProviders.first()
     var providerMenuExpanded by remember { mutableStateOf(false) }
+    var step by remember { mutableStateOf(0) }
     val values = remember(selectedProviderType) { mutableStateMapOf<String, String>() }
     val boolValues = remember(selectedProviderType) { mutableStateMapOf<String, Boolean>() }
     val multiValues = remember(selectedProviderType) { mutableStateMapOf<String, Set<String>>() }
@@ -749,143 +786,237 @@ private fun StationCreateDialog(
     )
     val hasSpecialSeed = (!useLegacySongSeed || trackValues[LEGACY_SONG_RADIO_SEED_KEY].orEmpty().isNotEmpty()) &&
         (!useLegacySimilarArtistSeed || artistValues[LEGACY_SIMILAR_ARTIST_SEED_KEY].orEmpty().isNotEmpty())
-    val canCreate = name.trim().isNotBlank() && hasRequiredOptions(options, configPayload) && hasSpecialSeed
+    val canContinue = name.trim().isNotBlank()
+    val canCreate = canContinue && hasRequiredOptions(options, configPayload) && hasSpecialSeed
 
-    AlertDialog(
+    fun createStation() {
+        val finalConfig = JSONObject(configPayload.toString())
+        applyLegacySearchSeeds(
+            provider = selectedProvider,
+            config = finalConfig,
+            artistValues = artistValues,
+            trackValues = trackValues,
+        )
+        val payload = JSONObject()
+            .put("name", name.trim())
+            .put("station_type", selectedProvider.stationType)
+            .put("config", finalConfig)
+            .put("seed_type", deriveSeedType(finalConfig))
+        val seedArtist = seedArtistFromConfig(finalConfig)
+        payload.put("seed_artist", seedArtist)
+        payload.put("seed_title", seedTitleFromConfig(finalConfig))
+        addLegacyStationMirrors(payload, finalConfig)
+        onCreate(payload.toString())
+    }
+
+    Dialog(
         onDismissRequest = onDismiss,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 18.dp)
-            .widthIn(max = 560.dp),
         properties = DialogProperties(usePlatformDefaultWidth = false),
-        shape = RoundedCornerShape(18.dp),
-        containerColor = HelixSurfaceRaised,
-        title = {
-            Text("Create station", style = MaterialTheme.typography.headlineSmall)
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .heightIn(max = 600.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = HelixSurfaceSoft,
-                    border = BorderStroke(1.dp, HelixBorder),
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.92f)
+                .padding(horizontal = 8.dp)
+                .widthIn(max = 640.dp),
+            shape = RoundedCornerShape(18.dp),
+            color = HelixSurfaceRaised,
+            tonalElevation = 6.dp,
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 18.dp, bottom = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    Text("Create station", style = MaterialTheme.typography.headlineSmall)
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            text = "Choose station type",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = HelixAccent,
-                        )
-                        OutlinedTextField(
-                            value = name,
-                            onValueChange = { name = it },
-                            label = { Text("Station name") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Box {
-                            Surface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .clickable { providerMenuExpanded = true },
-                                color = HelixSurfaceRaised,
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(1.dp, HelixBorder),
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(selectedProvider.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        if (selectedProvider.description.isNotBlank()) {
-                                            Text(
-                                                selectedProvider.description,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
-                                        }
-                                    }
-                                    Text("▾", color = HelixMuted)
-                                }
-                            }
-                            DropdownMenu(
-                                expanded = providerMenuExpanded,
-                                onDismissRequest = { providerMenuExpanded = false },
-                                shape = HelixMenuShape,
-                            ) {
-                                usableProviders.forEach { provider ->
-                                    DropdownMenuItem(
-                                        text = { Text(provider.displayName) },
-                                        onClick = {
-                                            selectedProviderType = provider.stationType
-                                            providerMenuExpanded = false
-                                        },
-                                    )
-                                }
-                            }
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = if (step == 0) HelixAccent else HelixSurfaceSoft,
+                            border = BorderStroke(1.dp, if (step == 0) HelixAccent else HelixBorder),
+                        ) {
+                            Text(
+                                text = "1",
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                color = if (step == 0) MaterialTheme.colorScheme.onPrimary else HelixMuted,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
                         }
+                        Text(
+                            "Details",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (step == 0) HelixAccent else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(1.dp)
+                                .background(HelixBorder),
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = if (step == 1) HelixAccent else HelixSurfaceSoft,
+                            border = BorderStroke(1.dp, if (step == 1) HelixAccent else HelixBorder),
+                        ) {
+                            Text(
+                                text = "2",
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                color = if (step == 1) MaterialTheme.colorScheme.onPrimary else HelixMuted,
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        }
+                        Text(
+                            "Options",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (step == 1) HelixAccent else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
 
-                StationFormContent(
-                    showNameField = false,
-                    name = name,
-                    onNameChange = {},
-                    provider = selectedProvider,
-                    options = options,
-                    values = values,
-                    boolValues = boolValues,
-                    multiValues = multiValues,
-                    artistValues = artistValues,
-                    trackValues = trackValues,
-                    useLegacySongSeed = useLegacySongSeed,
-                    useLegacySimilarArtistSeed = useLegacySimilarArtistSeed,
-                )
+                HorizontalDivider(color = HelixBorder)
+
+                if (step == 0) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(horizontal = 18.dp, vertical = 18.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(18.dp),
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Station name", style = MaterialTheme.typography.titleMedium)
+                            OutlinedTextField(
+                                value = name,
+                                onValueChange = { name = it },
+                                placeholder = { Text("Give your station a name") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("Station type", style = MaterialTheme.typography.titleMedium)
+                            Box {
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .clickable { providerMenuExpanded = true },
+                                    color = HelixSurfaceSoft,
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(1.dp, HelixBorder),
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            selectedProvider.displayName,
+                                            modifier = Modifier.weight(1f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text("▾", color = HelixMuted)
+                                    }
+                                }
+                                DropdownMenu(
+                                    expanded = providerMenuExpanded,
+                                    onDismissRequest = { providerMenuExpanded = false },
+                                    shape = HelixMenuShape,
+                                ) {
+                                    usableProviders.forEach { provider ->
+                                        DropdownMenuItem(
+                                            text = { Text(provider.displayName) },
+                                            onClick = {
+                                                selectedProviderType = provider.stationType
+                                                providerMenuExpanded = false
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                            selectedProvider.description.takeIf { it.isNotBlank() }?.let { description ->
+                                Text(
+                                    description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(horizontal = 14.dp, vertical = 14.dp),
+                    ) {
+                        Text(
+                            selectedProvider.displayName,
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        Text(
+                            name.trim(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        StationFormContent(
+                            showNameField = false,
+                            name = name,
+                            onNameChange = {},
+                            provider = selectedProvider,
+                            options = options,
+                            values = values,
+                            boolValues = boolValues,
+                            multiValues = multiValues,
+                            artistValues = artistValues,
+                            trackValues = trackValues,
+                            useLegacySongSeed = useLegacySongSeed,
+                            useLegacySimilarArtistSeed = useLegacySimilarArtistSeed,
+                            showProviderDescription = false,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 12.dp),
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = HelixBorder)
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    HelixTextButton(
+                        onClick = {
+                            if (step == 0) onDismiss() else step = 0
+                        },
+                    ) {
+                        Text(if (step == 0) "Cancel" else "Back")
+                    }
+
+                    Button(
+                        onClick = {
+                            if (step == 0) step = 1 else createStation()
+                        },
+                        enabled = if (step == 0) canContinue else canCreate,
+                    ) {
+                        Text(if (step == 0) "Next" else "Create")
+                    }
+                }
             }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val finalConfig = JSONObject(configPayload.toString())
-                    applyLegacySearchSeeds(
-                        provider = selectedProvider,
-                        config = finalConfig,
-                        artistValues = artistValues,
-                        trackValues = trackValues,
-                    )
-                    val payload = JSONObject()
-                        .put("name", name.trim())
-                        .put("station_type", selectedProvider.stationType)
-                        .put("config", finalConfig)
-                        .put("seed_type", deriveSeedType(finalConfig))
-                    val seedArtist = seedArtistFromConfig(finalConfig)
-                    payload.put("seed_artist", seedArtist)
-                    payload.put("seed_title", seedTitleFromConfig(finalConfig))
-                    addLegacyStationMirrors(payload, finalConfig)
-                    onCreate(payload.toString())
-                },
-                enabled = canCreate,
-            ) {
-                Text("Create")
-            }
-        },
-        dismissButton = {
-            HelixTextButton(onClick = onDismiss) { Text("Cancel") }
-        },
-    )
+        }
+    }
 }
 
 @Composable
@@ -902,6 +1033,7 @@ private fun StationFormContent(
     trackValues: MutableMap<String, List<StationTrackSeedUi>>,
     useLegacySongSeed: Boolean,
     useLegacySimilarArtistSeed: Boolean,
+    showProviderDescription: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val priorityOptions = remember(options) {
@@ -1004,13 +1136,15 @@ private fun StationFormContent(
             }
         }
 
-        provider?.description?.takeIf { it.isNotBlank() }?.let { description ->
-            Text(
-                description,
-                modifier = Modifier.padding(horizontal = 2.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        if (showProviderDescription) {
+            provider?.description?.takeIf { it.isNotBlank() }?.let { description ->
+                Text(
+                    description,
+                    modifier = Modifier.padding(horizontal = 2.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         if (sections.isEmpty() && prioritySections.isEmpty() && !useLegacySongSeed && !useLegacySimilarArtistSeed) {
@@ -1352,11 +1486,11 @@ private fun ArtistSearchConfigField(
                         onAdd = {
                             if (selected.size < maxItems) {
                                 val next = selected + StationArtistSeedUi(
-                                name = artist.name,
-                                browseId = artist.browseId,
-                                artUrl = artist.thumbnailUrl,
-                                thumbnailUrl = artist.thumbnailUrl,
-                            )
+                                    name = artist.name,
+                                    browseId = artist.browseId,
+                                    artUrl = artist.thumbnailUrl,
+                                    thumbnailUrl = artist.thumbnailUrl,
+                                )
                                 artistValues[option.key] = next.distinctBy { artistSeedKey(it) }.take(maxItems)
                                 query = ""
                                 results = emptyList()
@@ -1483,13 +1617,13 @@ private fun TrackSearchConfigField(
                         onAdd = {
                             if (selected.size < maxItems) {
                                 val next = selected + StationTrackSeedUi(
-                                title = song.title,
-                                artist = song.artist,
-                                album = song.album,
-                                videoId = song.videoId,
-                                artUrl = song.thumbnailUrl,
-                                thumbnailUrl = song.thumbnailUrl,
-                            )
+                                    title = song.title,
+                                    artist = song.artist,
+                                    album = song.album,
+                                    videoId = song.videoId,
+                                    artUrl = song.thumbnailUrl,
+                                    thumbnailUrl = song.thumbnailUrl,
+                                )
                                 trackValues[option.key] = next.distinctBy { trackSeedKey(it) }.take(maxItems)
                                 query = ""
                                 results = emptyList()
@@ -1797,8 +1931,7 @@ private fun applyLegacySearchSeeds(
     trackValues: Map<String, List<StationTrackSeedUi>>,
 ) {
     if (provider?.stationType == "song_radio" && provider.hasSearchOption("track_search").not()) {
-        trackValues[LEGACY_SONG_RADIO_SEED_KEY].orEmpty().firstOrNull()?.let { track ->
-            config.put("seed_type", "track")
+        trackValues[LEGACY_SONG_RADIO_SEED_KEY].orEmpty().firstOrNull()?.let { track ->            config.put("seed_type", "track")
             config.put("seed_title", track.title)
             config.put("seed_artist", track.artist)
             config.put("seed_video_id", track.videoId)
@@ -1998,7 +2131,6 @@ private fun firstArtistFromConfig(config: JSONObject): String? {
     }
     return null
 }
-
 private fun firstTrackFromConfig(config: JSONObject): StationTrackSeedUi? {
     listOf("seed_tracks", "tracks").forEach { key ->
         val arr = config.optJSONArray(key)

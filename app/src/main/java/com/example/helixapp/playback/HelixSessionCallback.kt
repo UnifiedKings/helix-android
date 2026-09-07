@@ -40,11 +40,23 @@ class HelixSessionCallback(
             b.build(),
         )
     }
+
     override fun onPlayerCommandRequest(
         session: MediaSession,
         controller: MediaSession.ControllerInfo,
         playerCommand: Int,
     ): Int {
+        // PlaybackController is an in-process MediaController owned by Helix itself. Its commands
+        // are the final step of backend -> Media3 synchronization, so they must be allowed to reach
+        // ExoPlayer directly. Intercepting them here would recursively route play/pause back through
+        // PlayerCommandCoordinator and prevent the local player from ever applying the command.
+        //
+        // External controllers (SystemUI, lockscreen, headset controls, etc.) still flow through
+        // the coordinator below so Helix remains authoritative for queue and playback state.
+        if (controller.packageName == ctx.packageName) {
+            return SessionResult.RESULT_SUCCESS
+        }
+
         when (playerCommand) {
             Player.COMMAND_PLAY_PAUSE -> {
                 scope.launch {
