@@ -76,6 +76,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.helixapp.helix.HelixTrackRequests
 import com.example.helixapp.playback.HelixTransport
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -133,6 +134,20 @@ fun PlaylistDetailScreen(
     val selectedTracks = tracks.filter { selectedTrackIds.contains(it.id) }
 
     fun normalizedPlaylistId(): String = systemKey?.takeIf { it.isNotBlank() } ?: playlistId
+
+    // Playlist actions talk to the server. A network error must become a message: escaping
+    // rememberCoroutineScope (which has no exception handler) would crash the app.
+    fun launchAction(failureMessage: String, block: suspend () -> Unit) {
+        scope.launch {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                snack.showNonBlocking(scope, "$failureMessage: ${e.javaClass.simpleName}")
+            }
+        }
+    }
 
     fun refresh() {
         if (HelixPrefs.getSessionToken(ctx).isNullOrBlank()) {
@@ -238,8 +253,11 @@ fun PlaylistDetailScreen(
             .toString()
             .toRequestBody(mt)
 
-        val resp: retrofit2.Response<String> = withContext(Dispatchers.IO) {
-            api.playlistReorderTracks(playlistId, body)
+        val resp: retrofit2.Response<String> = try {
+            withContext(Dispatchers.IO) { api.playlistReorderTracks(playlistId, body) }
+        } catch (e: Exception) {
+            tracks = previousTracks
+            throw e
         }
         if (!resp.isSuccessful) {
             tracks = previousTracks
@@ -439,7 +457,7 @@ fun PlaylistDetailScreen(
                 moved[i] = tmp
             }
         }
-        scope.launch { reorderTracksNow(moved) }
+        launchAction("Reorder failed") { reorderTracksNow(moved) }
     }
 
     fun moveSelectedDown() {
@@ -455,7 +473,7 @@ fun PlaylistDetailScreen(
                 moved[i] = tmp
             }
         }
-        scope.launch { reorderTracksNow(moved) }
+        launchAction("Reorder failed") { reorderTracksNow(moved) }
     }
 
     fun moveSelectedToTop() {
@@ -464,7 +482,7 @@ fun PlaylistDetailScreen(
         val moved =
             tracks.filter { selected.contains(it.id) } +
                 tracks.filterNot { selected.contains(it.id) }
-        scope.launch { reorderTracksNow(moved) }
+        launchAction("Reorder failed") { reorderTracksNow(moved) }
     }
 
     LaunchedEffect(playlistId) { refresh() }
@@ -563,7 +581,7 @@ fun PlaylistDetailScreen(
                         onDismissMenu = { showMenu = false },
                         onPlay = {
                             showLoadingOverlay("Starting playlist…")
-                            scope.launch {
+                            launchAction("Play failed") {
                                 try {
                                     playPlaylistNow(shuffle = false)
                                 } finally {
@@ -574,7 +592,7 @@ fun PlaylistDetailScreen(
                         },
                         onShuffle = {
                             showLoadingOverlay("Shuffling playlist…")
-                            scope.launch {
+                            launchAction("Shuffle failed") {
                                 try {
                                     playPlaylistNow(shuffle = true)
                                 } finally {
@@ -643,7 +661,7 @@ fun PlaylistDetailScreen(
                             }
                         },
                         onDragFinished = {
-                            scope.launch { reorderTracksNow(tracks) }
+                            launchAction("Reorder failed") { reorderTracksNow(tracks) }
                         },
                         canMoveUp = index > 0,
                         canMoveDown = index < tracks.lastIndex,
@@ -663,7 +681,7 @@ fun PlaylistDetailScreen(
                         },
                         onQueue = {
                             rowMenuTrack = null
-                            scope.launch { queueTracksNow(listOf(track)) }
+                            launchAction("Queue failed") { queueTracksNow(listOf(track)) }
                         },
                         onRemove = {
                             rowMenuTrack = null
@@ -683,7 +701,7 @@ fun PlaylistDetailScreen(
                     Button(
                         onClick = {
                             confirmDeletePlaylist = false
-                            scope.launch { deletePlaylistNow() }
+                            launchAction("Delete failed") { deletePlaylistNow() }
                         },
                     ) {
                         Text("Delete")
@@ -710,7 +728,7 @@ fun PlaylistDetailScreen(
                     Button(
                         onClick = {
                             confirmBulkRemove = false
-                            scope.launch { removeSelectedTracksNow() }
+                            launchAction("Remove failed") { removeSelectedTracksNow() }
                         },
                     ) {
                         Text("Remove")
@@ -734,7 +752,7 @@ fun PlaylistDetailScreen(
                     Button(
                         onClick = {
                             removeTarget = null
-                            scope.launch { removeTrackNow(tr) }
+                            launchAction("Remove failed") { removeTrackNow(tr) }
                         },
                     ) {
                         Text("Remove")
@@ -767,7 +785,7 @@ fun PlaylistDetailScreen(
                     },
                     onQueue = {
                         showBulkSheet = false
-                        scope.launch { queueTracksNow(selectedTracks) }
+                        launchAction("Queue failed") { queueTracksNow(selectedTracks) }
                     },
                     onMoveToTop = {
                         showBulkSheet = false
