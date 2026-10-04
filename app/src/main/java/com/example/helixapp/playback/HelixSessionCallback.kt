@@ -1,7 +1,9 @@
 package com.example.helixapp.playback
 import android.content.Context
 import android.util.Log
+import androidx.annotation.OptIn
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSession.ConnectionResult
 import androidx.media3.session.SessionResult
@@ -41,6 +43,7 @@ class HelixSessionCallback(
         )
     }
 
+    @OptIn(UnstableApi::class)
     override fun onPlayerCommandRequest(
         session: MediaSession,
         controller: MediaSession.ControllerInfo,
@@ -53,7 +56,12 @@ class HelixSessionCallback(
         //
         // External controllers (SystemUI, lockscreen, headset controls, etc.) still flow through
         // the coordinator below so Helix remains authoritative for queue and playback state.
-        if (controller.packageName == ctx.packageName) {
+        //
+        // Media3 also runs an in-process media notification controller, and attributes System UI
+        // (notification shade + lock screen card) commands to it. It shares our package name, so
+        // it must be excluded here or lock screen Next/Previous reach the single-item ExoPlayer
+        // timeline directly (Next does nothing, Previous only restarts the track).
+        if (controller.packageName == ctx.packageName && !session.isMediaNotificationController(controller)) {
             return SessionResult.RESULT_SUCCESS
         }
 
