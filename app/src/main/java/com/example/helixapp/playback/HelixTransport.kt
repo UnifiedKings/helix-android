@@ -100,11 +100,10 @@ object HelixTransport {
         val album = now.optString("album", "")
         val art = now.optString("art_url", "")
         val absArt = HelixImages.absoluteUrl(baseUrl, art)
-        val artworkData = if (absArt.isNotBlank()) {
-            withContext(Dispatchers.IO) { HelixImages.fetchArtworkBytes(ctx, absArt) }
-        } else {
-            null
-        }
+        
+        // Let Media3's internal SimpleBitmapLoader handle the artworkUri asynchronously 
+        // to prevent blocking the Play/Pause transport controls on network image downloads.
+        val artworkData: ByteArray? = null
 
         val currentItem = QueueMediaItem(
             queueItemId = qid,
