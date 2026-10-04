@@ -3,6 +3,8 @@ package com.example.helixapp.playback
 import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -122,11 +124,21 @@ object PlaybackController {
         } ?: false
     }
 
+    /**
+     * Run [onReady] with the shared MediaController, always on the controller's application
+     * (main) thread: MediaController throws when called from any other thread. Callers on
+     * background threads (e.g. the realtime websocket sync) get their work posted, in order.
+     */
     @Synchronized
     fun get(ctx: Context, onReady: (MediaController) -> Unit) {
         val existing = controller
         if (existing != null) {
-            onReady(existing)
+            val looper = existing.applicationLooper
+            if (Looper.myLooper() == looper) {
+                onReady(existing)
+            } else {
+                Handler(looper).post { onReady(existing) }
+            }
             return
         }
 
