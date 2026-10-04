@@ -41,6 +41,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,6 +69,8 @@ import com.example.helixapp.playback.HelixTransport
 import com.example.helixapp.playback.NowPlayingUi
 import com.example.helixapp.playback.PlaybackController
 import com.example.helixapp.playback.PlayerCommandCoordinator
+import com.example.helixapp.playback.PlayerStateStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -84,8 +87,9 @@ fun NowPlayingScreen() {
 
     var status by remember { mutableStateOf("Idle") }
     var loading by remember { mutableStateOf(false) }
-    var now by remember { mutableStateOf<NowPlayingUi?>(null) }
-    var activeStationName by remember { mutableStateOf<String?>(null) }
+    val playerState by PlayerStateStore.state.collectAsState()
+    var now by remember { mutableStateOf(PlayerStateStore.state.value?.now) }
+    var activeStationName by remember { mutableStateOf(PlayerStateStore.state.value?.activeStationName) }
 
     var metaTitle by remember { mutableStateOf<String?>(null) }
     var metaArtist by remember { mutableStateOf<String?>(null) }
@@ -133,37 +137,13 @@ fun NowPlayingScreen() {
         status = "Loading…"
         scope.launch {
             try {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val resp = withContext(Dispatchers.IO) { api.playerState() }
-                if (!resp.isSuccessful) {
-                    status = "Failed (HTTP ${resp.code()})"
-                    now = null
-                    activeStationName = null
-                    return@launch
-                }
-
-                val body = resp.body().orEmpty()
-                val root = JSONObject(body)
-                val (nowUi, _) = HelixTransport.parseQueueFromState(body)
-                now = nowUi
-                activeStationName = root
-                    .optJSONObject("active_station")
-                    ?.optString("name", "")
-                    ?.trim()
-                    ?.takeIf { it.isNotBlank() }
-
-                currentYtVideoId = nowUi?.ytVideoId?.takeIf { it.isNotBlank() }
-                currentSubsonicSongId = nowUi?.subsonicSongId?.takeIf { it.isNotBlank() }
-
-                if (!isPlaying) {
-                    isPlaying = runCatching { JSONObject(body).optBoolean("is_playing", false) }.getOrDefault(false)
-                }
-
-                status = if (nowUi == null) "Nothing playing" else "Done"
+                // Publishes to PlayerStateStore; the effect below applies it.
+                PlayerStateStore.refresh(ctx)
+                status = if (PlayerStateStore.state.value?.now == null) "Nothing playing" else "Done"
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                status = "Error: ${e.javaClass.simpleName}: ${e.message}"
-                now = null
-                activeStationName = null
+                status = "Error: ${e.toUserMessage("Loading the player")}"
             } finally {
                 loading = false
             }
@@ -171,6 +151,19 @@ fun NowPlayingScreen() {
     }
 
     LaunchedEffect(Unit) { refresh() }
+
+    // Shared backend state: websocket snapshots, coordinator syncs and explicit refreshes.
+    LaunchedEffect(playerState) {
+        val ps = playerState ?: return@LaunchedEffect
+        now = ps.now
+        activeStationName = ps.activeStationName
+        currentYtVideoId = ps.now?.ytVideoId?.takeIf { it.isNotBlank() }
+        currentSubsonicSongId = ps.now?.subsonicSongId?.takeIf { it.isNotBlank() }
+        // Media3's listener is the source of truth for isPlaying once connected; the backend
+        // value only seeds it.
+        if (controller == null) isPlaying = ps.isPlaying
+        if (!loading) status = if (ps.now == null) "Nothing playing" else "Done"
+    }
 
     suspend fun resolveCurrentSubsonicAvailability(): Boolean {
         val current = now ?: return false
@@ -413,8 +406,6 @@ fun NowPlayingScreen() {
                 metaArtist = md?.artist?.toString()
                 metaAlbum = md?.albumTitle?.toString()
                 metaArtUri = md?.artworkUri?.toString()
-
-                scope.launch { refresh() }
             }
 
             override fun onMediaMetadataChanged(mediaMetadata: androidx.media3.common.MediaMetadata) {
@@ -960,10 +951,7 @@ fun NowPlayingScreen() {
                                     return@get
                                 }
 
-                                scope.launchPlaybackAction(
-                                    failureAction = "Previous",
-                                    onSuccess = { refresh() },
-                                ) {
+                                scope.launchPlaybackAction(failureAction = "Previous") {
                                     PlayerCommandCoordinator.previous(ctx)
                                 }
                             }
@@ -999,10 +987,7 @@ fun NowPlayingScreen() {
 
                     IconButton(
                         onClick = {
-                            scope.launchPlaybackAction(
-                                failureAction = "Next",
-                                onSuccess = { refresh() },
-                            ) {
+                            scope.launchPlaybackAction(failureAction = "Next") {
                                 PlayerCommandCoordinator.next(ctx)
                             }
                         },

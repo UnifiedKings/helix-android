@@ -52,6 +52,7 @@ object HelixTransport {
         }
 
         val state = JSONObject(resp.body().orEmpty())
+        PlayerStateStore.publish(state)
         val now = state.optJSONObject("now_playing")
         if (now == null) {
             Log.w("HELIX_PLAYER", "No now_playing in playback/state; clearing local Media3 state")
@@ -128,8 +129,10 @@ object HelixTransport {
         if (forceRestart) Log.d("HELIX_PLAYER", "forceRestart=true")
     }
 
-    fun parseQueueFromState(stateJson: String): Pair<NowPlayingUi?, List<QueueItemUi>> {
-        val root = JSONObject(stateJson)
+    fun parseQueueFromState(stateJson: String): Pair<NowPlayingUi?, List<QueueItemUi>> =
+        parseQueueFromState(JSONObject(stateJson))
+
+    fun parseQueueFromState(root: JSONObject): Pair<NowPlayingUi?, List<QueueItemUi>> {
         val now = root.optJSONObject("now_playing")
         val arr = root.optJSONArray("queue") ?: JSONArray()
         val items = ArrayList<QueueItemUi>(arr.length())

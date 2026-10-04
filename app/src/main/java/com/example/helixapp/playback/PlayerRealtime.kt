@@ -3,7 +3,6 @@ package com.example.helixapp.playback
 import android.content.Context
 import android.util.Log
 import com.example.helixapp.HelixPrefs
-import com.example.helixapp.RefreshSignals
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -169,7 +168,8 @@ object PlayerRealtime {
             lastSequence = seq
         }
 
-        RefreshSignals.bumpPlayer()
+        // Screens read the snapshot straight from the store; no extra /state fetch needed.
+        PlayerStateStore.publish(state)
 
         val now = state.optJSONObject("now_playing")
         val queueItemId = now
@@ -241,7 +241,7 @@ object PlayerRealtime {
             while (isActive) {
                 delay(FALLBACK_REFRESH_MS)
                 if (!socketOpen) {
-                    RefreshSignals.bumpPlayer()
+                    // The sync fetches /state, which also updates PlayerStateStore.
                     syncRequests.trySend(Unit)
                 }
             }

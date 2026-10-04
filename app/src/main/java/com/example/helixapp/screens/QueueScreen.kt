@@ -47,7 +47,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
-import com.example.helixapp.playback.HelixTransport
+import com.example.helixapp.playback.PlayerStateStore
 import com.example.helixapp.playback.PlaybackActions
 import com.example.helixapp.playback.NowPlayingUi
 import com.example.helixapp.playback.QueueItemUi
@@ -56,6 +56,7 @@ import com.example.helixapp.ui.theme.HelixBorder
 import com.example.helixapp.ui.theme.HelixMuted
 import com.example.helixapp.ui.theme.HelixSurfaceRaised
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -68,15 +69,17 @@ import kotlin.math.max
 fun QueueScreen() {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val playerRefreshTick by RefreshSignals.player.collectAsState()
+    val playerState by PlayerStateStore.state.collectAsState()
     val listState = rememberLazyListState()
     val density = LocalDensity.current
     val reorderStepPx = with(density) { 82.dp.toPx() }
 
     var status by remember { mutableStateOf("Idle") }
     var loading by remember { mutableStateOf(false) }
-    var nowPlaying by remember { mutableStateOf<NowPlayingUi?>(null) }
-    var queue by remember { mutableStateOf(emptyList<QueueItemUi>()) }
+    var nowPlaying by remember { mutableStateOf(PlayerStateStore.state.value?.now) }
+    var queue by remember { mutableStateOf(PlayerStateStore.state.value?.queue.orEmpty()) }
+    // While a drag or its save is in flight the local order is ahead of the shared state.
+    var savingOrder by remember { mutableStateOf(false) }
     var hasAutoScrolled by remember { mutableStateOf(false) }
     var draggingId by remember { mutableStateOf<String?>(null) }
     var dragOffsetY by remember { mutableFloatStateOf(0f) }
@@ -95,20 +98,14 @@ fun QueueScreen() {
         status = "Loading…"
         scope.launch {
             try {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val resp = withContext(Dispatchers.IO) { api.playerState() }
-                if (!resp.isSuccessful) {
-                    status = "Failed (HTTP ${resp.code()})"
-                    return@launch
-                }
-                val (now, items) = HelixTransport.parseQueueFromState(resp.body().orEmpty())
-                nowPlaying = now
-                queue = items
+                // Publishes to PlayerStateStore; the effect below applies it to this screen.
+                PlayerStateStore.refresh(ctx)
+                val items = PlayerStateStore.state.value?.queue.orEmpty()
                 status = if (items.isEmpty()) "Queue is empty" else "Done"
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                status = "Error: ${e.javaClass.simpleName}: ${e.message}"
-                nowPlaying = null
-                queue = emptyList()
+                status = e.toUserMessage("Loading the queue")
             } finally {
                 loading = false
             }
@@ -118,6 +115,7 @@ fun QueueScreen() {
     fun saveReorder(itemIds: List<String>) {
         reorderError = null
         status = "Saving queue order…"
+        savingOrder = true
         scope.launch {
             try {
                 val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
@@ -133,16 +131,20 @@ fun QueueScreen() {
                 if (!resp.isSuccessful) {
                     reorderError = "HTTP ${resp.code()}"
                     status = "Could not reorder queue"
+                    savingOrder = false
                     refresh(resetScroll = false)
                     return@launch
                 }
-                val (now, items) = HelixTransport.parseQueueFromState(resp.body().orEmpty())
-                nowPlaying = now
-                queue = items
+                // The response is the updated player state.
+                PlayerStateStore.publish(resp.body().orEmpty())
                 status = "Done"
+                savingOrder = false
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 reorderError = e.message ?: e.javaClass.simpleName
                 status = "Could not reorder queue"
+                savingOrder = false
                 refresh(resetScroll = false)
             }
         }
@@ -155,7 +157,8 @@ fun QueueScreen() {
             ?: item.index
         scope.launchPlaybackAction(
             failureAction = "Jump",
-            onSuccess = { refresh(resetScroll = true) },
+            // The coordinator's sync already published the new state; just re-center.
+            onSuccess = { hasAutoScrolled = false },
         ) {
             PlaybackActions.jumpTo(ctx, currentIndex)
         }
@@ -210,11 +213,16 @@ fun QueueScreen() {
 
     LaunchedEffect(Unit) { refresh(resetScroll = true) }
 
-    // /ws/player is the primary source of cross-client changes. Refresh the authoritative
-    // queue whenever the process-wide realtime listener receives a player.state snapshot.
-    LaunchedEffect(playerRefreshTick) {
-        if (playerRefreshTick > 0 && draggingId == null) {
-            refresh(resetScroll = false)
+    // Shared player state (websocket snapshots, coordinator syncs, reorder responses) drives
+    // the list. Hold it back while the user is dragging or a new order is being saved, then
+    // catch up with whatever arrived meanwhile.
+    LaunchedEffect(playerState, draggingId, savingOrder) {
+        val ps = playerState ?: return@LaunchedEffect
+        if (draggingId != null || savingOrder) return@LaunchedEffect
+        nowPlaying = ps.now
+        queue = ps.queue
+        if (!loading && reorderError == null) {
+            status = if (ps.queue.isEmpty()) "Queue is empty" else "Done"
         }
     }
 
