@@ -18,6 +18,9 @@ object PlaybackController {
     private const val PICTURE_TYPE_FRONT_COVER = 3
 
     @Volatile
+    private var controllerFuture: com.google.common.util.concurrent.ListenableFuture<MediaController>? = null
+
+    @Volatile
     private var controller: MediaController? = null
 
     suspend fun awaitController(ctx: Context): MediaController {
@@ -58,69 +61,51 @@ object PlaybackController {
             c.isPlaying
         ) return true
 
-        return withTimeoutOrNull(timeoutMs) {
-            var done = false
-            val listener = object : Player.Listener {
-                override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    if (done) return
-                    if (!startSnapshot.isPlaying && isPlaying) {
-                        done = true
-                        return
-                    }
-                    if (startSnapshot.isPlaying && isPlaying) {
-                        val cur = c.currentMediaItem?.mediaId
-                        if (
-                            cur != null &&
-                            startSnapshot.mediaId != null &&
-                            cur != startSnapshot.mediaId
-                        ) {
-                            done = true
-                        }
-                    }
-                }
+        return kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+            kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+                val listener = object : Player.Listener {
+                    private fun checkAndResume() {
+                        if (cont.isCompleted) return
 
-                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                    if (done) return
-                    if (startSnapshot.isPlaying) {
-                        val cur = mediaItem?.mediaId
-                        if (
-                            cur != null &&
-                            startSnapshot.mediaId != null &&
-                            cur != startSnapshot.mediaId &&
-                            c.isPlaying
-                        ) {
-                            done = true
-                        }
-                    }
-                }
-
-                override fun onPlaybackStateChanged(playbackState: Int) {
-                    if (done) return
-                    if (playbackState == Player.STATE_READY && c.isPlaying) {
-                        if (!startSnapshot.isPlaying) {
-                            done = true
+                        if (!startSnapshot.isPlaying && c.isPlaying) {
+                            cont.resume(true)
                             return
                         }
-                        val cur = c.currentMediaItem?.mediaId
-                        if (
-                            startSnapshot.mediaId == null ||
-                            cur == null ||
-                            cur != startSnapshot.mediaId
-                        ) {
-                            done = true
+                        if (startSnapshot.isPlaying && c.isPlaying) {
+                            val cur = c.currentMediaItem?.mediaId
+                            if (
+                                startSnapshot.mediaId == null ||
+                                cur == null ||
+                                cur != startSnapshot.mediaId
+                            ) {
+                                if (c.playbackState == Player.STATE_READY) {
+                                    cont.resume(true)
+                                }
+                            }
                         }
                     }
-                }
-            }
 
-            c.addListener(listener)
-            try {
-                while (!done) {
-                    if (!startSnapshot.isPlaying && c.isPlaying) {
-                        done = true
-                        break
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        checkAndResume()
                     }
-                    if (startSnapshot.isPlaying && c.isPlaying) {
+
+                    override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                        checkAndResume()
+                    }
+
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        checkAndResume()
+                    }
+                }
+
+                c.addListener(listener)
+                cont.invokeOnCancellation { c.removeListener(listener) }
+
+                // Kick off a single check immediately in case it's already audible
+                if (!cont.isCompleted) {
+                    if (!startSnapshot.isPlaying && c.isPlaying) {
+                        cont.resume(true)
+                    } else if (startSnapshot.isPlaying && c.isPlaying) {
                         val cur = c.currentMediaItem?.mediaId
                         if (
                             startSnapshot.mediaId == null ||
@@ -128,20 +113,16 @@ object PlaybackController {
                             cur != startSnapshot.mediaId
                         ) {
                             if (c.playbackState == Player.STATE_READY) {
-                                done = true
-                                break
+                                cont.resume(true)
                             }
                         }
                     }
-                    delay(50)
                 }
-            } finally {
-                c.removeListener(listener)
             }
-            true
         } ?: false
     }
 
+    @Synchronized
     fun get(ctx: Context, onReady: (MediaController) -> Unit) {
         val existing = controller
         if (existing != null) {
@@ -149,8 +130,13 @@ object PlaybackController {
             return
         }
 
-        val token = SessionToken(ctx, ComponentName(ctx, PlaybackService::class.java))
-        val future = MediaController.Builder(ctx, token).buildAsync()
+        var future = controllerFuture
+        if (future == null) {
+            val token = SessionToken(ctx, ComponentName(ctx, PlaybackService::class.java))
+            future = MediaController.Builder(ctx, token).buildAsync()
+            controllerFuture = future
+        }
+
         future.addListener(
             {
                 val c = future.get()
@@ -158,7 +144,7 @@ object PlaybackController {
                 Log.d("HELIX_PLAYER", "MediaController ready")
                 onReady(c)
             },
-            Runnable::run
+            androidx.core.content.ContextCompat.getMainExecutor(ctx)
         )
     }
 
@@ -209,10 +195,12 @@ object PlaybackController {
         }
     }
 
+    @Synchronized
     fun release() {
-        val existing = controller ?: return
+        val existingFuture = controllerFuture ?: return
+        controllerFuture = null
         controller = null
-        runCatching { existing.release() }
+        runCatching { MediaController.releaseFuture(existingFuture) }
             .onFailure { Log.w("HELIX_PLAYER", "MediaController release failed", it) }
     }
 
