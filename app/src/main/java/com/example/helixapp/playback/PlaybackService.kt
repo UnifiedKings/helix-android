@@ -307,6 +307,15 @@ class PlaybackService : MediaSessionService() {
                         beginHandoff("stream retry $attempt")
                         scope.launch {
                             delay(STREAM_ERROR_RETRY_DELAY_MS * attempt)
+                            // The backend may have replaced or removed this item meanwhile (a
+                            // station rebuilding its queue returns 404 for dropped items). Retrying
+                            // would prepare()/play() whatever is current now.
+                            val currentUri = player.currentMediaItem?.localConfiguration?.uri?.toString()
+                            if (currentUri != uri) {
+                                Log.d("HELIX_PLAYER", "Skipping stream retry; item changed uri=$uri now=$currentUri")
+                                if (currentUri == null) endHandoff("retry target cleared")
+                                return@launch
+                            }
                             Log.w(
                                 "HELIX_PLAYER",
                                 "Retrying stream after temporary HTTP error attempt=$attempt uri=$uri"
