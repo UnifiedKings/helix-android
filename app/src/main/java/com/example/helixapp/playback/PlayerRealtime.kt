@@ -122,6 +122,7 @@ object PlayerRealtime {
                 if (socket !== webSocket) return
                 Log.d(TAG, "Player websocket connected")
                 socketOpen = true
+                reconnectAttempts = 0
                 reconnectJob?.cancel()
                 startPingLoop(webSocket)
             }
@@ -247,11 +248,16 @@ object PlayerRealtime {
         }
     }
 
+    private var reconnectAttempts = 0
+
     @Synchronized
     private fun scheduleReconnect() {
         if (!started || reconnectJob?.isActive == true) return
         reconnectJob = scope.launch {
-            delay(RECONNECT_DELAY_MS)
+            val delayMs = (RECONNECT_DELAY_MS * (1 shl minOf(reconnectAttempts, 6)))
+                .coerceAtMost(30_000L)
+            reconnectAttempts++
+            delay(delayMs)
             reconnectJob = null
             connect()
         }
