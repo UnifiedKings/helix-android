@@ -9,8 +9,10 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.media.AudioManager
 import android.os.Build
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
+import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -24,6 +26,7 @@ import com.example.helixapp.HelixClient
 import com.example.helixapp.HelixPrefs
 import com.example.helixapp.MainActivity
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -48,6 +51,22 @@ class PlaybackService : MediaSessionService() {
 
     @Volatile private var lastStreamErrorUri: String? = null
     @Volatile private var streamErrorRetryCount: Int = 0
+
+    // Track handoff (screen-off autoplay fix).
+    //
+    // The Media3 timeline only ever holds the current track. When it ends, ExoPlayer goes to
+    // STATE_ENDED and two things happen that break autoplay with the screen locked:
+    //   1. ExoPlayer drops its wake lock and audio stops, so the CPU can suspend before the
+    //      /ended -> /state -> load-next-stream round trip finishes.
+    //   2. Media3 sees "not playing" and demotes the service out of the foreground. When the
+    //      next track then calls play(), Android 12+ refuses to re-promote a background app
+    //      (ForegroundServiceStartNotAllowedException), so playback stalls until the user
+    //      unlocks the phone.
+    // While a handoff is active we hold a partial wake lock and suppress Media3 notification
+    // updates so the service stays in the foreground until the next track is READY.
+    @Volatile private var handoffActive = false
+    private var handoffTimeoutJob: Job? = null
+    private lateinit var handoffWakeLock: PowerManager.WakeLock
 
     private val noisyAudioReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -78,6 +97,10 @@ class PlaybackService : MediaSessionService() {
         createNotificationChannel()
         setMediaNotificationProvider(DefaultMediaNotificationProvider(this))
 
+        handoffWakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "helix:track-handoff")
+            .apply { setReferenceCounted(false) }
+
         httpFactory = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
 
@@ -85,6 +108,8 @@ class PlaybackService : MediaSessionService() {
             .setMediaSourceFactory(
                 DefaultMediaSourceFactory(this).setDataSourceFactory(httpFactory)
             )
+            // Keep CPU + Wi-Fi awake while buffering/playing a stream with the screen off.
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
 
         // Media3 may receive an is_playing=true snapshot almost immediately after the app opens.
@@ -137,12 +162,30 @@ class PlaybackService : MediaSessionService() {
                     lastEndedAtMs = nowMs
                     lastEndedUri = uri
 
+                    // Must be set synchronously, before Media3's notification manager reacts
+                    // to STATE_ENDED and demotes the service.
+                    beginHandoff("track ended")
+
                     scope.launch {
                         Log.d(
                             "HELIX_PLAYER",
                             "STATE_ENDED -> notifying backend /api/playback/ended"
                         )
-                        HelixTransport.backendEndedAndRefresh(this@PlaybackService)
+                        try {
+                            HelixTransport.backendEndedAndRefresh(this@PlaybackService)
+                        } catch (e: Exception) {
+                            Log.e("HELIX_PLAYER", "Track handoff failed", e)
+                            endHandoff("handoff error")
+                        }
+                    }
+                    return
+                }
+
+                if (handoffActive) {
+                    when {
+                        state == Player.STATE_READY -> endHandoff("next track ready")
+                        state == Player.STATE_IDLE && player.playerError == null ->
+                            endHandoff("player cleared")
                     }
                 }
             }
@@ -168,6 +211,9 @@ class PlaybackService : MediaSessionService() {
 
                     if (streamErrorRetryCount < MAX_STREAM_ERROR_RETRIES) {
                         val attempt = ++streamErrorRetryCount
+                        // A retry from a locked screen needs the same protection as a track
+                        // handoff, or play() can't bring the service back to the foreground.
+                        beginHandoff("stream retry $attempt")
                         scope.launch {
                             delay(STREAM_ERROR_RETRY_DELAY_MS * attempt)
                             Log.w(
@@ -186,8 +232,10 @@ class PlaybackService : MediaSessionService() {
                                 )
                             }
                         }
+                        return
                     }
                 }
+                endHandoff("unrecoverable player error")
             }
         })
 
@@ -229,6 +277,7 @@ class PlaybackService : MediaSessionService() {
         Log.i("HELIX_PLAYER", "App task removed; stopping Helix playback")
 
         closingFromTaskRemoval = true
+        endHandoff("task removed", refreshNotification = false)
 
         if (::player.isInitialized) {
             // Remove the old item immediately, not just its playing state. Android may keep
@@ -268,7 +317,45 @@ class PlaybackService : MediaSessionService() {
         return requireNotNull(session)
     }
 
+    override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
+        if (handoffActive) {
+            // Hold the current foreground notification through the track handoff. It is
+            // refreshed as soon as the handoff ends (see endHandoff).
+            return
+        }
+        super.onUpdateNotification(session, startInForegroundRequired)
+    }
+
+    private fun beginHandoff(reason: String) {
+        Log.d("HELIX_PLAYER", "Handoff begin ($reason)")
+        handoffActive = true
+        handoffWakeLock.acquire(HANDOFF_MAX_MS)
+        handoffTimeoutJob?.cancel()
+        handoffTimeoutJob = scope.launch {
+            delay(HANDOFF_MAX_MS)
+            endHandoff("timeout")
+        }
+    }
+
+    private fun endHandoff(reason: String, refreshNotification: Boolean = true) {
+        if (!handoffActive) return
+        Log.d("HELIX_PLAYER", "Handoff end ($reason)")
+        handoffActive = false
+        handoffTimeoutJob?.cancel()
+        handoffTimeoutJob = null
+        if (::handoffWakeLock.isInitialized && handoffWakeLock.isHeld) {
+            handoffWakeLock.release()
+        }
+        // Catch up on any notification/foreground updates suppressed during the handoff.
+        if (!refreshNotification) return
+        session?.let { s ->
+            runCatching { onUpdateNotification(s, false) }
+                .onFailure { Log.w("HELIX_PLAYER", "Notification refresh after handoff failed", it) }
+        }
+    }
+
     override fun onDestroy() {
+        endHandoff("service destroyed", refreshNotification = false)
         unregisterNoisyAudioReceiver()
 
         if (::player.isInitialized) {
@@ -433,6 +520,8 @@ class PlaybackService : MediaSessionService() {
         private const val ENDED_EARLY_TOLERANCE_MS = 1000L
         private const val MAX_STREAM_ERROR_RETRIES = 8
         private const val STREAM_ERROR_RETRY_DELAY_MS = 1500L
+
+        private const val HANDOFF_MAX_MS = 30_000L
 
         private const val STARTUP_PAUSE_TIMEOUT_MS = 2_000L
         private const val TASK_REMOVAL_PAUSE_TIMEOUT_MS = 2_000L
