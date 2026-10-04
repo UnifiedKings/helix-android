@@ -12,19 +12,25 @@ import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.datasource.DataSourceBitmapLoader
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.CacheBitmapLoader
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.example.helixapp.HelixClient
 import com.example.helixapp.HelixPrefs
 import com.example.helixapp.MainActivity
+import com.google.common.util.concurrent.MoreExecutors
+import java.util.concurrent.Executors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
@@ -110,6 +116,15 @@ class PlaybackService : MediaSessionService() {
             )
             // Keep CPU + Wi-Fi awake while buffering/playing a stream with the screen off.
             .setWakeMode(C.WAKE_MODE_NETWORK)
+            // Let ExoPlayer request audio focus: pause for calls and other media apps, duck
+            // under navigation prompts. Permanent focus loss is mirrored to the backend below.
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+                    .build(),
+                /* handleAudioFocus= */ true,
+            )
             .build()
 
         // Media3 may receive an is_playing=true snapshot almost immediately after the app opens.
@@ -118,9 +133,20 @@ class PlaybackService : MediaSessionService() {
             !closingFromTaskRemoval
         }
 
+        // Artwork for the notification and lock screen is loaded by the session from artworkUri.
+        // Reuse the stream's HTTP factory so those requests carry the Helix session cookie;
+        // Subsonic cover URLs need it, and the default loader sends no cookie.
+        val bitmapLoader = CacheBitmapLoader(
+            DataSourceBitmapLoader(
+                MoreExecutors.listeningDecorator(Executors.newSingleThreadExecutor()),
+                DefaultDataSource.Factory(this, httpFactory),
+            )
+        )
+
         session = MediaSession.Builder(this, sessionPlayer)
             .setCallback(HelixSessionCallback(this, sessionPlayer, scope))
             .setSessionActivity(buildNowPlayingPendingIntent())
+            .setBitmapLoader(bitmapLoader)
             .build()
 
         player.addListener(object : Player.Listener {
@@ -155,6 +181,19 @@ class PlaybackService : MediaSessionService() {
                 // (which would destructively reset the audio buffer and seek position).
                 session?.let { s ->
                     s.setCustomLayout(s.customLayout)
+                }
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                // Another app took audio focus for good (transient losses such as calls are
+                // suppressed and resumed by ExoPlayer itself). Tell the backend we paused, or the
+                // next backend sync would call play() and grab focus straight back.
+                if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_FOCUS_LOSS) {
+                    Log.i("HELIX_PLAYER", "Audio focus lost; pausing backend")
+                    scope.launch {
+                        runCatching { PlayerCommandCoordinator.pause(this@PlaybackService) }
+                            .onFailure { Log.e("HELIX_PLAYER", "Backend pause after focus loss failed", it) }
+                    }
                 }
             }
 
