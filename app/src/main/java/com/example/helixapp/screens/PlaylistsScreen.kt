@@ -46,7 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import coil.compose.AsyncImage
-import com.example.helixapp.playback.HelixTransport
+import com.example.helixapp.playback.PlaybackActions
 import com.example.helixapp.ui.theme.HelixAccent
 import com.example.helixapp.ui.theme.HelixBorder
 import com.example.helixapp.ui.theme.HelixMuted
@@ -119,37 +119,14 @@ fun PlaylistsScreen(
         }
     }
 
-    suspend fun playPlaylistFromList(pl: PlaylistUi, shuffle: Boolean) {
-        showLoadingOverlay(if (shuffle) "Shuffling playlist…" else "Starting playlist…")
-        try {
-            HelixPrefs.setLastStationName(ctx, null)
-            val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-            val effectivePlaylistId = pl.systemKey.takeIf { it.isNotBlank() } ?: pl.id
-            val mt = "application/json; charset=utf-8".toMediaType()
-            val body = JSONObject()
-                .put("playlist_id", effectivePlaylistId)
-                .put("shuffle", shuffle)
-                .toString()
-                .toRequestBody(mt)
-
-            val playResp = withContext(Dispatchers.IO) { api.playPlaylist(body) }
-            if (!playResp.isSuccessful) {
-                status = if (shuffle) "Shuffle failed (HTTP ${playResp.code()})" else "Play failed (HTTP ${playResp.code()})"
-                return
-            }
-
-            showLoadingOverlay("Loading now playing…")
-            HelixTransport.refreshAndPlayCurrent(ctx)
-            status = if (shuffle) "Shuffling playlist: ${pl.name}" else "Playing playlist: ${pl.name}"
-        } catch (e: Exception) {
-            status = if (shuffle) {
-                "Shuffle error: ${e.javaClass.simpleName}: ${e.message}"
-            } else {
-                "Play error: ${e.javaClass.simpleName}: ${e.message}"
-            }
-        } finally {
-            onNavigateToNowPlaying()
-            hideLoadingOverlay()
+    fun playPlaylistFromList(pl: PlaylistUi, shuffle: Boolean) {
+        val effectivePlaylistId = pl.systemKey.takeIf { it.isNotBlank() } ?: pl.id
+        scope.launchPlaybackAction(
+            failureAction = if (shuffle) "Shuffle" else "Play",
+            overlayMessage = if (shuffle) "Shuffling playlist…" else "Starting playlist…",
+            onSuccess = onNavigateToNowPlaying,
+        ) {
+            PlaybackActions.playPlaylist(ctx, effectivePlaylistId, shuffle)
         }
     }
 
@@ -224,8 +201,8 @@ fun PlaylistsScreen(
                         onOpenPlaylist = {
                             onOpenPlaylist(if (pl.systemKey == "liked") "liked" else pl.id)
                         },
-                        onPlay = { scope.launch { playPlaylistFromList(pl, shuffle = false) } },
-                        onShuffle = { scope.launch { playPlaylistFromList(pl, shuffle = true) } },
+                        onPlay = { playPlaylistFromList(pl, shuffle = false) },
+                        onShuffle = { playPlaylistFromList(pl, shuffle = true) },
                     )
                     if (index < playlists.lastIndex) {
                         Box(

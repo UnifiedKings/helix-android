@@ -128,10 +128,6 @@ object HelixTransport {
         if (forceRestart) Log.d("HELIX_PLAYER", "forceRestart=true")
     }
 
-    suspend fun refreshAndPlayCurrent(ctx: Context, forceRestart: Boolean = false) {
-        refreshAndSync(ctx, forceLoadStream = forceRestart, forceRestart = forceRestart)
-    }
-
     fun parseQueueFromState(stateJson: String): Pair<NowPlayingUi?, List<QueueItemUi>> {
         val root = JSONObject(stateJson)
         val now = root.optJSONObject("now_playing")

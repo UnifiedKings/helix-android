@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import com.example.helixapp.playback.HelixTransport
+import com.example.helixapp.playback.PlaybackActions
 import com.example.helixapp.playback.NowPlayingUi
 import com.example.helixapp.playback.QueueItemUi
 import com.example.helixapp.ui.theme.HelixAccent
@@ -149,24 +150,14 @@ fun QueueScreen() {
 
     fun jumpTo(item: QueueItemUi) {
         if (draggingId != null) return
-        scope.launch {
-            try {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val mt = "application/json; charset=utf-8".toMediaType()
-                val currentIndex = queue.indexOfFirst { it.queueItemId == item.queueItemId }
-                    .takeIf { it >= 0 }
-                    ?: item.index
-                val body = JSONObject().put("index", currentIndex).toString().toRequestBody(mt)
-                val resp = withContext(Dispatchers.IO) { api.jump(body) }
-                if (!resp.isSuccessful) {
-                    status = "Jump failed (HTTP ${resp.code()})"
-                    return@launch
-                }
-                HelixTransport.refreshAndPlayCurrent(ctx)
-                refresh(resetScroll = true)
-            } catch (e: Exception) {
-                status = "Jump error: ${e.javaClass.simpleName}: ${e.message}"
-            }
+        val currentIndex = queue.indexOfFirst { it.queueItemId == item.queueItemId }
+            .takeIf { it >= 0 }
+            ?: item.index
+        scope.launchPlaybackAction(
+            failureAction = "Jump",
+            onSuccess = { refresh(resetScroll = true) },
+        ) {
+            PlaybackActions.jumpTo(ctx, currentIndex)
         }
     }
 

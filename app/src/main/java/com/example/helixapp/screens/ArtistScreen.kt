@@ -53,7 +53,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.helixapp.helix.HelixTrackRequests
-import com.example.helixapp.playback.HelixTransport
+import com.example.helixapp.playback.PlaybackActions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
@@ -373,31 +373,27 @@ private fun ArtistPopularRow(
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val snack = remember { SnackbarHostState() }
     val baseUrl = HelixPrefs.getBaseUrl(ctx)
     val thumb = HelixImages.absoluteUrl(baseUrl, song.thumbnailUrl)
+
+    fun playSong() {
+        scope.launchPlaybackAction(
+            failureAction = "Play",
+            overlayMessage = "Starting track…",
+            onSuccess = onNavigateToNowPlaying,
+        ) {
+            PlaybackActions.playTrack(
+                ctx,
+                HelixTrackRequests.playOrQueueBodyFromSearchSong(HelixPrefs.getBaseUrl(ctx), song),
+            )
+        }
+    }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable {
-                scope.launch {
-                    try {
-                        HelixPrefs.setLastStationName(ctx, null)
-                        val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                        val payload = HelixTrackRequests.playOrQueueBodyFromSearchSong(HelixPrefs.getBaseUrl(ctx), song)
-                        val resp = withContext(Dispatchers.IO) { api.playTrack(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())) }
-                        if (!resp.isSuccessful) {
-                            snack.showNonBlocking(scope, "Play failed (HTTP ${resp.code()})")
-                            return@launch
-                        }
-                        HelixTransport.refreshAndPlayCurrent(ctx)
-                    } catch (e: Exception) {
-                        snack.showNonBlocking(scope, "Play error: ${e.javaClass.simpleName}")
-                    } finally {
-                        onNavigateToNowPlaying()
-                    }
-                }
+                playSong()
             }
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -434,39 +430,15 @@ private fun ArtistPopularRow(
                 onDismissRequest = { expanded = false },
                 onPlay = {
                     expanded = false
-                    scope.launch {
-                        try {
-                            HelixPrefs.setLastStationName(ctx, null)
-                            val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                            val payload = HelixTrackRequests.playOrQueueBodyFromSearchSong(HelixPrefs.getBaseUrl(ctx), song)
-                            val resp = withContext(Dispatchers.IO) { api.playTrack(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())) }
-                            if (!resp.isSuccessful) {
-                                snack.showNonBlocking(scope, "Play failed (HTTP ${resp.code()})")
-                                return@launch
-                            }
-                            HelixTransport.refreshAndPlayCurrent(ctx)
-                        } catch (e: Exception) {
-                            snack.showNonBlocking(scope, "Play error: ${e.javaClass.simpleName}")
-                        } finally {
-                            onNavigateToNowPlaying()
-                        }
-                    }
+                    playSong()
                 },
                 onAddToQueue = {
                     expanded = false
-                    scope.launch {
-                        try {
-                            val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                            val payload = HelixTrackRequests.playOrQueueBodyFromSearchSong(HelixPrefs.getBaseUrl(ctx), song)
-                            val resp = withContext(Dispatchers.IO) { api.queueAppendTrack(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())) }
-                            if (!resp.isSuccessful) {
-                                snack.showNonBlocking(scope, "Queue failed (HTTP ${resp.code()})")
-                                return@launch
-                            }
-                            snack.showNonBlocking(scope, "Queued: ${song.title}")
-                        } catch (e: Exception) {
-                            snack.showNonBlocking(scope, "Queue error: ${e.javaClass.simpleName}")
-                        }
+                    scope.launchPlaybackAction(failureAction = "Queue", successMessage = "Queued: ${song.title}") {
+                        PlaybackActions.queueTrack(
+                            ctx,
+                            HelixTrackRequests.playOrQueueBodyFromSearchSong(HelixPrefs.getBaseUrl(ctx), song),
+                        )
                     }
                 },
                 onAddToSubsonic = {
@@ -483,12 +455,12 @@ private fun ArtistPopularRow(
                             }
                             val resp = withContext(Dispatchers.IO) { api.subsonicAddTrack(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())) }
                             if (!resp.isSuccessful) {
-                                snack.showNonBlocking(scope, "Add to Subsonic failed (HTTP ${resp.code()})")
+                                UserMessages.show("Add to Subsonic failed (HTTP ${resp.code()})")
                                 return@launch
                             }
-                            snack.showNonBlocking(scope, "Added to Subsonic: ${song.title}")
+                            UserMessages.show("Added to Subsonic: ${song.title}")
                         } catch (e: Exception) {
-                            snack.showNonBlocking(scope, "Add to Subsonic error: ${e.javaClass.simpleName}")
+                            UserMessages.show("Add to Subsonic error: ${e.javaClass.simpleName}")
                         }
                     }
                 },

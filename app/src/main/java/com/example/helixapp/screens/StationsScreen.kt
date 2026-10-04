@@ -63,7 +63,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import coil.compose.AsyncImage
-import com.example.helixapp.playback.HelixTransport
+import com.example.helixapp.playback.PlaybackActions
 import com.example.helixapp.ui.theme.HelixAccent
 import com.example.helixapp.ui.theme.HelixBorder
 import com.example.helixapp.ui.theme.HelixMuted
@@ -190,54 +190,6 @@ fun StationsScreen(
     var tuningStation by remember { mutableStateOf<StationUi?>(null) }
     var creating by remember { mutableStateOf(false) }
 
-    suspend fun waitForNowPlayingReady(
-        targetStationId: String,
-        targetStationName: String,
-        timeoutMs: Long,
-    ): Boolean {
-        val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-        val start = SystemClock.elapsedRealtime()
-        while (SystemClock.elapsedRealtime() - start < timeoutMs) {
-            val resp = withContext(Dispatchers.IO) { api.playerState() }
-            if (resp.isSuccessful) {
-                val root = JSONObject(resp.body().orEmpty())
-                val activeStation = root.optJSONObject("active_station")
-                val activeStationId = activeStation
-                    ?.optString("id", activeStation.optString("station_id", ""))
-                    ?.trim()
-                    .orEmpty()
-                val activeStationName = activeStation
-                    ?.optString("name", "")
-                    ?.trim()
-                    .orEmpty()
-
-                val stationMatches =
-                    (targetStationId.isNotBlank() && activeStationId == targetStationId) ||
-                    (targetStationName.isNotBlank() && activeStationName.equals(targetStationName, ignoreCase = true))
-
-                val now = root.optJSONObject("now_playing")
-                val qid = now?.optString("id", now.optString("queue_item_id", "")) ?: ""
-                val queue = root.optJSONArray("queue") ?: JSONArray()
-
-                var currentIsQueued = false
-                for (i in 0 until queue.length()) {
-                    val item = queue.optJSONObject(i) ?: continue
-                    val itemId = item.optString("id", item.optString("queue_item_id", ""))
-                    if (itemId == qid) {
-                        currentIsQueued = true
-                        break
-                    }
-                }
-
-                if (stationMatches && qid.isNotBlank() && currentIsQueued) {
-                    return true
-                }
-            }
-            delay(250)
-        }
-        return false
-    }
-
     fun refresh() {
         lastRefreshMs = System.currentTimeMillis()
         if (HelixPrefs.getSessionToken(ctx).isNullOrBlank()) {
@@ -351,41 +303,12 @@ fun StationsScreen(
                         baseUrl = HelixPrefs.getBaseUrl(ctx),
                         onTune = { tuningStation = station },
                         onPlay = {
-                            scope.launch {
-                                showLoadingOverlay(
-                                    "Starting station…\nStations can take up to 30 seconds to load."
-                                )
-                                try {
-                                    val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                                    val payload = JSONObject().put("reset", true).toString()
-                                    val body = payload.toRequestBody("application/json; charset=utf-8".toMediaType())
-                                    val resp = withContext(Dispatchers.IO) { api.playStation(station.id, body) }
-                                    if (!resp.isSuccessful) {
-                                        status = "Play failed (HTTP ${resp.code()})"
-                                        return@launch
-                                    }
-                                    showLoadingOverlay(
-                                        "Building station…\nStations can take up to 30 seconds to load."
-                                    )
-                                    val ready = waitForNowPlayingReady(
-                                        targetStationId = station.id,
-                                        targetStationName = station.name,
-                                        timeoutMs = 30_000L,
-                                    )
-                                    if (!ready) {
-                                        status = "Station took too long to load"
-                                        return@launch
-                                    }
-                                    showLoadingOverlay("Loading now playing…")
-                                    withContext(Dispatchers.IO) { api.resume() }
-                                    HelixTransport.refreshAndPlayCurrent(ctx, forceRestart = true)
-                                    status = "Playing station: ${station.name}"
-                                } catch (e: Exception) {
-                                    status = "Play error: ${e.javaClass.simpleName}: ${e.message}"
-                                } finally {
-                                    onNavigateToNowPlaying()
-                                    hideLoadingOverlay()
-                                }
+                            scope.launchPlaybackAction(
+                                failureAction = "Starting the station",
+                                overlayMessage = "Starting station…\nStations can take up to 30 seconds to load.",
+                                onSuccess = onNavigateToNowPlaying,
+                            ) {
+                                PlaybackActions.playStation(ctx, station.id, station.name)
                             }
                         },
                     )

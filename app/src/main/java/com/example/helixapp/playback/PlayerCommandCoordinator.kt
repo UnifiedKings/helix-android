@@ -2,7 +2,9 @@ package com.example.helixapp.playback
 
 import android.content.Context
 import android.util.Log
+import com.example.helixapp.HelixApi
 import com.example.helixapp.HelixClient
+import com.example.helixapp.HelixHttpException
 import com.example.helixapp.HelixPrefs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -10,6 +12,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import retrofit2.Response
 
 /**
  * Serializes player mutations with realtime Media3 synchronization.
@@ -66,26 +69,34 @@ object PlayerCommandCoordinator {
         throw IllegalStateException("POST /api/playback/ended failed: $failure")
     }
 
-    suspend fun next(context: Context) {
+    /**
+     * Run a backend request that changes what's playing (play a track/album/playlist, jump,
+     * next, previous...), then load the backend's new current item into Media3.
+     *
+     * Every such change goes through here so taps, lock-screen commands and websocket syncs
+     * are applied one at a time. Throws [HelixHttpException] when the backend rejects the
+     * request; network failures propagate as IOExceptions.
+     */
+    suspend fun changePlayback(
+        context: Context,
+        forceLoadStream: Boolean = false,
+        forceRestart: Boolean = false,
+        request: suspend (HelixApi) -> Response<String>,
+    ) {
         mutex.withLock {
             val api = HelixClient.create(context, HelixPrefs.getBaseUrl(context))
-            val resp = withContext(Dispatchers.IO) { api.next() }
-            if (!resp.isSuccessful) {
-                throw IllegalStateException("Next failed (HTTP ${resp.code()})")
-            }
-            HelixTransport.refreshAndSync(context, forceLoadStream = true)
+            val resp = withContext(Dispatchers.IO) { request(api) }
+            if (!resp.isSuccessful) throw HelixHttpException(resp.code())
+            HelixTransport.refreshAndSync(context, forceLoadStream = forceLoadStream, forceRestart = forceRestart)
         }
     }
 
+    suspend fun next(context: Context) {
+        changePlayback(context, forceLoadStream = true) { it.next() }
+    }
+
     suspend fun previous(context: Context) {
-        mutex.withLock {
-            val api = HelixClient.create(context, HelixPrefs.getBaseUrl(context))
-            val resp = withContext(Dispatchers.IO) { api.prev() }
-            if (!resp.isSuccessful) {
-                throw IllegalStateException("Previous failed (HTTP ${resp.code()})")
-            }
-            HelixTransport.refreshAndSync(context, forceLoadStream = true)
-        }
+        changePlayback(context, forceLoadStream = true) { it.prev() }
     }
 
     suspend fun pause(context: Context) {

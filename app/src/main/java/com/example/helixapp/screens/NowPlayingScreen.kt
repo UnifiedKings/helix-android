@@ -947,7 +947,7 @@ fun NowPlayingScreen() {
                                 if (!mediaMatchesBackend) {
                                     scope.launch {
                                         runCatching {
-                                            HelixTransport.refreshAndSync(ctx, forceLoadStream = true)
+                                            PlayerCommandCoordinator.syncFromBackend(ctx, forceLoadStream = true)
                                             refresh()
                                         }
                                     }
@@ -960,14 +960,11 @@ fun NowPlayingScreen() {
                                     return@get
                                 }
 
-                                scope.launch {
-                                    try {
-                                        val api = HelixClient.create(ctx, baseUrl)
-                                        withContext(Dispatchers.IO) { api.prev() }
-                                        HelixTransport.refreshAndSync(ctx, forceLoadStream = true)
-                                        refresh()
-                                    } catch (_: Exception) {
-                                    }
+                                scope.launchPlaybackAction(
+                                    failureAction = "Previous",
+                                    onSuccess = { refresh() },
+                                ) {
+                                    PlayerCommandCoordinator.previous(ctx)
                                 }
                             }
                         },
@@ -1002,14 +999,11 @@ fun NowPlayingScreen() {
 
                     IconButton(
                         onClick = {
-                            scope.launch {
-                                try {
-                                    val api = HelixClient.create(ctx, baseUrl)
-                                    withContext(Dispatchers.IO) { api.next() }
-                                    HelixTransport.refreshAndSync(ctx, forceLoadStream = true)
-                                    refresh()
-                                } catch (_: Exception) {
-                                }
+                            scope.launchPlaybackAction(
+                                failureAction = "Next",
+                                onSuccess = { refresh() },
+                            ) {
+                                PlayerCommandCoordinator.next(ctx)
                             }
                         },
                         modifier = Modifier.size(56.dp),

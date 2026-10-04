@@ -75,7 +75,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.helixapp.helix.HelixTrackRequests
-import com.example.helixapp.playback.HelixTransport
+import com.example.helixapp.playback.PlaybackActions
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -199,37 +199,34 @@ fun PlaylistDetailScreen(
         }
     }
 
-    suspend fun playPlaylistNow(shuffle: Boolean = false) {
+    fun playPlaylistNow(shuffle: Boolean) {
         if (playlistId.isBlank()) {
-            snack.showSnackbar("Missing playlist id")
+            UserMessages.show("Missing playlist id")
             return
         }
-
-        HelixPrefs.setLastStationName(ctx, null)
-
-        val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-        val mt = "application/json; charset=utf-8".toMediaType()
-        val body = JSONObject()
-            .put("playlist_id", normalizedPlaylistId())
-            .put("shuffle", shuffle)
-            .toString()
-            .toRequestBody(mt)
-
-        val resp = withContext(Dispatchers.IO) { api.playPlaylist(body) }
-        if (!resp.isSuccessful) {
-            snack.showSnackbar(
-                if (shuffle) {
-                    "Shuffle failed (HTTP ${resp.code()})"
-                } else {
-                    "Play failed (HTTP ${resp.code()})"
-                }
-            )
-            return
+        scope.launchPlaybackAction(
+            failureAction = if (shuffle) "Shuffle" else "Play",
+            overlayMessage = if (shuffle) "Shuffling playlist…" else "Starting playlist…",
+            onSuccess = onNavigateToNowPlaying,
+        ) {
+            PlaybackActions.playPlaylist(ctx, normalizedPlaylistId(), shuffle)
         }
-
-        HelixTransport.refreshAndPlayCurrent(ctx)
-        snack.showSnackbar(if (shuffle) "Shuffling playlist" else "Playing playlist")
     }
+
+    fun trackPayload(t: PlaylistTrackUi): JSONObject =
+        HelixTrackRequests.playOrQueueBodyFromPlaylistTrack(
+            title = t.title,
+            artist = t.artist,
+            album = t.album,
+            artUrl = t.artUrl,
+            durationMs = t.durationMs,
+            source = t.source,
+            subsonicSongId = t.subsonicSongId,
+            ytVideoId = t.ytVideoId,
+            ytBrowseId = t.ytBrowseId,
+            mbRecordingId = t.mbRecordingId,
+            mbArtistId = t.mbArtistId,
+        )
 
     suspend fun reorderTracksNow(newTracks: List<PlaylistTrackUi>) {
         if (!canEditPlaylist) {
@@ -340,70 +337,32 @@ fun PlaylistDetailScreen(
         )
     }
 
-    suspend fun queueTracksNow(selection: List<PlaylistTrackUi>) {
+    fun queueTracksNow(selection: List<PlaylistTrackUi>) {
         if (selection.isEmpty()) return
-        val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-        val mt = "application/json; charset=utf-8".toMediaType()
-        var failedCode: Int? = null
-        for (t in selection) {
-            val body = HelixTrackRequests.playOrQueueBodyFromPlaylistTrack(
-                title = t.title,
-                artist = t.artist,
-                album = t.album,
-                artUrl = t.artUrl,
-                durationMs = t.durationMs,
-                source = t.source,
-                subsonicSongId = t.subsonicSongId,
-                ytVideoId = t.ytVideoId,
-                ytBrowseId = t.ytBrowseId,
-                mbRecordingId = t.mbRecordingId,
-                mbArtistId = t.mbArtistId,
-            ).toString().toRequestBody(mt)
-            val resp = withContext(Dispatchers.IO) { api.queueAppendTrack(body) }
-            if (!resp.isSuccessful) {
-                failedCode = resp.code()
-                break
+        var queued = 0
+        scope.launchPlaybackAction(
+            failureAction = "Queue",
+            successMessage = "Queued ${selection.size} track${if (selection.size == 1) "" else "s"}",
+        ) {
+            try {
+                for (t in selection) {
+                    PlaybackActions.queueTrack(ctx, trackPayload(t))
+                    queued++
+                }
+            } catch (e: Exception) {
+                if (queued > 0) UserMessages.show("Queued $queued of ${selection.size} before an error")
+                throw e
             }
-        }
-        if (failedCode != null) {
-            snack.showSnackbar("Queue failed (HTTP $failedCode)")
-        } else {
-            snack.showSnackbar(
-                "Queued ${selection.size} track${if (selection.size == 1) "" else "s"}"
-            )
         }
     }
 
-    suspend fun playTrackNow(track: PlaylistTrackUi) {
-        try {
-            HelixPrefs.setLastStationName(ctx, null)
-            val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-            val mt = "application/json; charset=utf-8".toMediaType()
-            val body = HelixTrackRequests.playOrQueueBodyFromPlaylistTrack(
-                title = track.title,
-                artist = track.artist,
-                album = track.album,
-                artUrl = track.artUrl,
-                durationMs = track.durationMs,
-                source = track.source,
-                subsonicSongId = track.subsonicSongId,
-                ytVideoId = track.ytVideoId,
-                ytBrowseId = track.ytBrowseId,
-                mbRecordingId = track.mbRecordingId,
-                mbArtistId = track.mbArtistId,
-            ).toString().toRequestBody(mt)
-            val resp = withContext(Dispatchers.IO) { api.playTrack(body) }
-            if (!resp.isSuccessful) {
-                snack.showSnackbar("Play failed (HTTP ${resp.code()})")
-                return
-            }
-            showLoadingOverlay("Loading now playing…")
-            HelixTransport.refreshAndPlayCurrent(ctx)
-            onNavigateToNowPlaying()
-        } catch (t: Throwable) {
-            snack.showSnackbar("Play error: ${t.javaClass.simpleName}")
-        } finally {
-            hideLoadingOverlay()
+    fun playTrackNow(track: PlaylistTrackUi) {
+        scope.launchPlaybackAction(
+            failureAction = "Play",
+            overlayMessage = "Starting track…",
+            onSuccess = onNavigateToNowPlaying,
+        ) {
+            PlaybackActions.playTrack(ctx, trackPayload(track))
         }
     }
 
@@ -580,26 +539,10 @@ fun PlaylistDetailScreen(
                         onShowMenu = { showMenu = true },
                         onDismissMenu = { showMenu = false },
                         onPlay = {
-                            showLoadingOverlay("Starting playlist…")
-                            launchAction("Play failed") {
-                                try {
-                                    playPlaylistNow(shuffle = false)
-                                } finally {
-                                    onNavigateToNowPlaying()
-                                    hideLoadingOverlay()
-                                }
-                            }
+                            playPlaylistNow(shuffle = false)
                         },
                         onShuffle = {
-                            showLoadingOverlay("Shuffling playlist…")
-                            launchAction("Shuffle failed") {
-                                try {
-                                    playPlaylistNow(shuffle = true)
-                                } finally {
-                                    onNavigateToNowPlaying()
-                                    hideLoadingOverlay()
-                                }
-                            }
+                            playPlaylistNow(shuffle = true)
                         },
                         onAddSongs = { showAddOverlay = true },
                         onEdit = {
@@ -672,16 +615,16 @@ fun PlaylistDetailScreen(
                         artUrl = art,
                         durationText = formatDurationMs(track.durationMs),
                         menuOpen = rowMenuTrack?.id == track.id,
-                        onRowClick = { scope.launch { playTrackNow(track) } },
+                        onRowClick = { playTrackNow(track) },
                         onOpenMenu = { rowMenuTrack = track },
                         onDismissMenu = { rowMenuTrack = null },
                         onPlay = {
                             rowMenuTrack = null
-                            scope.launch { playTrackNow(track) }
+                            playTrackNow(track)
                         },
                         onQueue = {
                             rowMenuTrack = null
-                            launchAction("Queue failed") { queueTracksNow(listOf(track)) }
+                            queueTracksNow(listOf(track))
                         },
                         onRemove = {
                             rowMenuTrack = null
@@ -785,7 +728,7 @@ fun PlaylistDetailScreen(
                     },
                     onQueue = {
                         showBulkSheet = false
-                        launchAction("Queue failed") { queueTracksNow(selectedTracks) }
+                        queueTracksNow(selectedTracks)
                     },
                     onMoveToTop = {
                         showBulkSheet = false

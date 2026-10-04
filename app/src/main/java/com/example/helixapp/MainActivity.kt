@@ -20,11 +20,14 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -124,9 +127,15 @@ private fun HelixApp(openNowPlayingSignal: Int) {
         navigateToTab(TabDest.NowPlaying)
     }
 
+    val messageHost = remember { SnackbarHostState() }
+    LaunchedEffect(Unit) {
+        UserMessages.messages.collect { messageHost.showSnackbar(it) }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
             containerColor = HelixBackground,
+            snackbarHost = { SnackbarHost(messageHost) },
             bottomBar = {
                 if (isTabRoute(currentRoute)) {
                     Surface(color = HelixSurface) {

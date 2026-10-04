@@ -58,7 +58,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.helixapp.helix.HelixTrackRequests
-import com.example.helixapp.playback.HelixTransport
+import com.example.helixapp.playback.PlaybackActions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -220,53 +220,30 @@ fun AlbumScreen(
         )
     }
 
+    fun trackPayload(track: AlbumTrack): JSONObject =
+        HelixTrackRequests.playOrQueueBodyFromSearchSong(HelixPrefs.getBaseUrl(ctx), trackToSearchSong(track))
+
+    fun albumPayload(): JSONObject = JSONObject().apply {
+        put("browse_id", browseId)
+        if (title.isNotBlank()) put("title", title)
+        if (artist.isNotBlank()) put("artist", artist)
+        val art = absoluteThumb(HelixPrefs.getBaseUrl(ctx))
+        if (art.isNotBlank()) put("art_url", art)
+    }
+
     fun playSingle(track: AlbumTrack) {
-        showLoadingOverlay("Starting track…")
-
-        scope.launch {
-            try {
-                // Leaving station mode (if any) when directly starting a track.
-                HelixPrefs.setLastStationName(ctx, null)
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val bodyJson = HelixTrackRequests.playOrQueueBodyFromSearchSong(
-                    HelixPrefs.getBaseUrl(ctx),
-                    trackToSearchSong(track)
-                )
-                val body = bodyJson.toString()
-                    .toRequestBody("application/json; charset=utf-8".toMediaType())
-
-                val resp = withContext(Dispatchers.IO) { api.playTrack(body) }
-                if (!resp.isSuccessful) {
-                    snack.showNonBlocking(scope, "Play failed (HTTP ${resp.code()})")
-                    return@launch
-                }
-
-                showLoadingOverlay("Loading now playing…")
-                HelixTransport.refreshAndPlayCurrent(ctx)
-            } catch (t: Throwable) {
-                snack.showNonBlocking(scope, "Play error: ${t.javaClass.simpleName}")
-            } finally {
-                onNavigateToNowPlaying()
-                hideLoadingOverlay()
-            }
+        scope.launchPlaybackAction(
+            failureAction = "Play",
+            overlayMessage = "Starting track…",
+            onSuccess = onNavigateToNowPlaying,
+        ) {
+            PlaybackActions.playTrack(ctx, trackPayload(track))
         }
     }
 
     fun queueSingle(track: AlbumTrack) {
-        scope.launch {
-            runCatching {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val bodyJson = HelixTrackRequests.playOrQueueBodyFromSearchSong(HelixPrefs.getBaseUrl(ctx), trackToSearchSong(track))
-                val body = bodyJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
-                val resp = withContext(Dispatchers.IO) { api.queueAppendTrack(body) }
-                if (!resp.isSuccessful) {
-                    snack.showNonBlocking(scope, "Queue failed (HTTP ${resp.code()})")
-                    return@launch
-                }
-                snack.showNonBlocking(scope, "Queued: ${track.title}")
-            }.onFailure {
-                snack.showNonBlocking(scope, "Queue error: ${it.javaClass.simpleName}")
-            }
+        scope.launchPlaybackAction(failureAction = "Queue", successMessage = "Queued: ${track.title}") {
+            PlaybackActions.queueTrack(ctx, trackPayload(track))
         }
     }
 
@@ -311,66 +288,19 @@ fun AlbumScreen(
 
     fun playAlbum() {
         if (tracks.isEmpty()) return
-
-        showLoadingOverlay("Starting album…")
-
-        scope.launch {
-            try {
-                HelixPrefs.setLastStationName(ctx, null)
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val baseUrl = HelixPrefs.getBaseUrl(ctx)
-                val payloadJson = JSONObject().apply {
-                    put("browse_id", browseId)
-                    if (title.isNotBlank()) put("title", title)
-                    if (artist.isNotBlank()) put("artist", artist)
-                    val art = absoluteThumb(baseUrl)
-                    if (art.isNotBlank()) put("art_url", art)
-                }
-                val body = payloadJson.toString()
-                    .toRequestBody("application/json; charset=utf-8".toMediaType())
-
-                val resp = withContext(Dispatchers.IO) { api.playAlbum(body) }
-                if (!resp.isSuccessful) {
-                    snack.showNonBlocking(scope, "Play failed (HTTP ${resp.code()})")
-                    return@launch
-                }
-
-                showLoadingOverlay("Loading now playing…")
-                HelixTransport.refreshAndPlayCurrent(ctx)
-            } catch (t: Throwable) {
-                snack.showNonBlocking(scope, "Play error: ${t.javaClass.simpleName}")
-            } finally {
-                onNavigateToNowPlaying()
-                hideLoadingOverlay()
-            }
+        scope.launchPlaybackAction(
+            failureAction = "Play",
+            overlayMessage = "Starting album…",
+            onSuccess = onNavigateToNowPlaying,
+        ) {
+            PlaybackActions.playAlbum(ctx, albumPayload())
         }
     }
 
     fun queueAlbum() {
         if (tracks.isEmpty()) return
-        scope.launch {
-            runCatching {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val baseUrl = HelixPrefs.getBaseUrl(ctx)
-                val payloadJson = JSONObject().apply {
-                    put("browse_id", browseId)
-                    if (title.isNotBlank()) put("title", title)
-                    if (artist.isNotBlank()) put("artist", artist)
-                    val art = absoluteThumb(baseUrl)
-                    if (art.isNotBlank()) put("art_url", art)
-                }
-                val body = payloadJson.toString()
-                    .toRequestBody("application/json; charset=utf-8".toMediaType())
-
-                val resp = withContext(Dispatchers.IO) { api.queueAppendAlbum(body) }
-                if (!resp.isSuccessful) {
-                    snack.showNonBlocking(scope, "Queue failed (HTTP ${resp.code()})")
-                    return@launch
-                }
-                snack.showNonBlocking(scope, "Album queued")
-            }.onFailure {
-                snack.showNonBlocking(scope, "Queue error: ${it.javaClass.simpleName}")
-            }
+        scope.launchPlaybackAction(failureAction = "Queue", successMessage = "Album queued") {
+            PlaybackActions.queueAlbum(ctx, albumPayload())
         }
     }
 
