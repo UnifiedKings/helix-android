@@ -132,13 +132,6 @@ object HelixTransport {
         refreshAndSync(ctx, forceLoadStream = forceRestart, forceRestart = forceRestart)
     }
 
-    suspend fun backendEndedAndRefresh(ctx: Context) {
-        val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-        Log.d("HELIX_PLAYER", "POST /api/playback/ended")
-        withContext(Dispatchers.IO) { api.ended() }
-        refreshAndSync(ctx, forceLoadStream = true)
-    }
-
     fun parseQueueFromState(stateJson: String): Pair<NowPlayingUi?, List<QueueItemUi>> {
         val root = JSONObject(stateJson)
         val now = root.optJSONObject("now_playing")

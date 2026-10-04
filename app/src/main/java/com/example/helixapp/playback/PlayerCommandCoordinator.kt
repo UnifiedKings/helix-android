@@ -1,9 +1,12 @@
 package com.example.helixapp.playback
 
 import android.content.Context
+import android.util.Log
 import com.example.helixapp.HelixClient
 import com.example.helixapp.HelixPrefs
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -19,12 +22,48 @@ import kotlinx.coroutines.withContext
  * transition is applied at a time.
  */
 object PlayerCommandCoordinator {
+    private const val ENDED_MAX_ATTEMPTS = 3
+    private const val ENDED_RETRY_BASE_DELAY_MS = 1_000L
+
     private val mutex = Mutex()
 
     suspend fun syncFromBackend(context: Context, forceLoadStream: Boolean = false) {
         mutex.withLock {
             HelixTransport.refreshAndSync(context, forceLoadStream = forceLoadStream)
         }
+    }
+
+    /**
+     * Report the current track as finished, then load whatever the backend plays next.
+     *
+     * The /ended call is retried outside the lock so user commands aren't blocked during
+     * backoff. Only a confirmed /ended force-reloads the stream: reloading after a failed call
+     * would restart the track that just finished.
+     */
+    suspend fun trackEnded(context: Context) {
+        val api = HelixClient.create(context, HelixPrefs.getBaseUrl(context))
+        var failure = "unknown error"
+        for (attempt in 1..ENDED_MAX_ATTEMPTS) {
+            val result = runCatching { withContext(Dispatchers.IO) { api.ended() } }
+            result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+
+            val resp = result.getOrNull()
+            if (resp != null && resp.isSuccessful) {
+                mutex.withLock {
+                    HelixTransport.refreshAndSync(context, forceLoadStream = true)
+                }
+                return
+            }
+
+            failure = resp?.let { "HTTP ${it.code()}" } ?: result.exceptionOrNull().toString()
+            // A 4xx won't succeed on retry.
+            if (resp != null && resp.code() in 400..499) break
+            if (attempt < ENDED_MAX_ATTEMPTS) {
+                Log.w("HELIX_PLAYER", "POST /api/playback/ended failed ($failure); retrying")
+                delay(ENDED_RETRY_BASE_DELAY_MS shl (attempt - 1))
+            }
+        }
+        throw IllegalStateException("POST /api/playback/ended failed: $failure")
     }
 
     suspend fun next(context: Context) {

@@ -58,6 +58,9 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var lastStreamErrorUri: String? = null
     @Volatile private var streamErrorRetryCount: Int = 0
 
+    @Volatile private var earlyEndUri: String? = null
+    @Volatile private var earlyEndRetryCount: Int = 0
+
     // Track handoff (screen-off autoplay fix).
     //
     // The Media3 timeline only ever holds the current track. When it ends, ExoPlayer goes to
@@ -223,13 +226,28 @@ class PlaybackService : MediaSessionService() {
                         return
                     }
                     if (endedSuspiciouslyEarly) {
+                        // The stream was cut off (e.g. the connection dropped mid-track). Resume
+                        // from where it stopped instead of going silent; give up after a few
+                        // attempts and treat the track as finished so playback moves on.
+                        if (uri != earlyEndUri) {
+                            earlyEndUri = uri
+                            earlyEndRetryCount = 0
+                        }
+                        if (earlyEndRetryCount < MAX_EARLY_END_RETRIES) {
+                            earlyEndRetryCount++
+                            Log.w(
+                                "HELIX_PLAYER",
+                                "STATE_ENDED early; resuming attempt=$earlyEndRetryCount pos=$pos dur=$dur uri=$uri"
+                            )
+                            beginHandoff("stream ended early")
+                            player.seekTo(pos)
+                            player.play()
+                            return
+                        }
                         Log.w(
                             "HELIX_PLAYER",
-                            "STATE_ENDED ignored (ended early) pos=$pos dur=$dur uri=$uri"
+                            "STATE_ENDED early again; treating as ended pos=$pos dur=$dur uri=$uri"
                         )
-                        lastEndedAtMs = nowMs
-                        lastEndedUri = uri
-                        return
                     }
 
                     lastEndedAtMs = nowMs
@@ -245,7 +263,7 @@ class PlaybackService : MediaSessionService() {
                             "STATE_ENDED -> notifying backend /api/playback/ended"
                         )
                         try {
-                            HelixTransport.backendEndedAndRefresh(this@PlaybackService)
+                            PlayerCommandCoordinator.trackEnded(this@PlaybackService)
                         } catch (e: Exception) {
                             Log.e("HELIX_PLAYER", "Track handoff failed", e)
                             endHandoff("handoff error")
@@ -593,6 +611,7 @@ class PlaybackService : MediaSessionService() {
         private const val ENDED_EARLY_TOLERANCE_MS = 1000L
         private const val MAX_STREAM_ERROR_RETRIES = 8
         private const val STREAM_ERROR_RETRY_DELAY_MS = 1500L
+        private const val MAX_EARLY_END_RETRIES = 3
 
         private const val HANDOFF_MAX_MS = 30_000L
 
