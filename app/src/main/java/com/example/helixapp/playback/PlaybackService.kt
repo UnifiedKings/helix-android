@@ -124,6 +124,40 @@ class PlaybackService : MediaSessionService() {
             .build()
 
         player.addListener(object : Player.Listener {
+            private var lastMetadataTitle: String? = null
+            private var lastMetadataArtist: String? = null
+
+            override fun onMediaMetadataChanged(mediaMetadata: androidx.media3.common.MediaMetadata) {
+                val newTitle = mediaMetadata.title?.toString()
+                val newArtist = mediaMetadata.artist?.toString()
+
+                // Deduplicate metadata events (live streams fire ID3 tags constantly)
+                if (newTitle == lastMetadataTitle && newArtist == lastMetadataArtist) {
+                    return
+                }
+
+                lastMetadataTitle = newTitle
+                lastMetadataArtist = newArtist
+
+                // ID3 tags arrived and the song has genuinely changed.
+                // Wake the CPU to ensure the lock screen can redraw in Doze mode.
+                val powerManager = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                val wakeLock = powerManager.newWakeLock(
+                    android.os.PowerManager.PARTIAL_WAKE_LOCK,
+                    "HelixApp::ID3TagWakeLock"
+                )
+                wakeLock.acquire(3 * 1000L)
+
+                Log.d("HELIX_PLAYER", "ID3 Tags changed, forcing notification redraw: title=$newTitle artist=$newArtist")
+
+                // Force MediaSessionService to immediately invalidate its cached notification
+                // and push the fresh ID3 tags to the lock screen, without touching the Timeline
+                // (which would destructively reset the audio buffer and seek position).
+                session?.let { s ->
+                    s.setCustomLayout(s.customLayout)
+                }
+            }
+
             override fun onPlaybackStateChanged(state: Int) {
                 Log.d(
                     "HELIX_PLAYER",
