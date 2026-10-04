@@ -51,26 +51,38 @@ object PlayerCommandCoordinator {
 
     suspend fun pause(context: Context) {
         mutex.withLock {
+            // Optimistically pause the local player immediately so headset buttons feel responsive
+            PlaybackController.pause(context)
+
             val api = HelixClient.create(context, HelixPrefs.getBaseUrl(context))
-            val resp = withContext(Dispatchers.IO) { api.pause() }
-            if (!resp.isSuccessful) {
-                throw IllegalStateException("Pause failed (HTTP ${resp.code()})")
+            val resp = runCatching { withContext(Dispatchers.IO) { api.pause() } }.getOrNull()
+            
+            if (resp?.isSuccessful != true) {
+                // If the backend call fails (e.g. no network), we leave the local player paused.
+                // The user intended to pause, and local playback is halted. The next successful
+                // sync will resolve any backend mismatch.
+            } else {
+                // Re-apply backend truth to ensure perfect sync
+                HelixTransport.refreshAndSync(context)
             }
-            // Re-apply backend truth so Media3/lockscreen cannot remain in the opposite state.
-            HelixTransport.refreshAndSync(context)
         }
     }
 
     suspend fun resume(context: Context) {
         mutex.withLock {
+            // Optimistically resume the local player immediately
+            PlaybackController.resume(context)
+
             val api = HelixClient.create(context, HelixPrefs.getBaseUrl(context))
-            val resp = withContext(Dispatchers.IO) { api.resume() }
-            if (!resp.isSuccessful) {
-                throw IllegalStateException("Resume failed (HTTP ${resp.code()})")
+            val resp = runCatching { withContext(Dispatchers.IO) { api.resume() } }.getOrNull()
+            
+            if (resp?.isSuccessful != true) {
+                // If we fail to tell the backend we resumed (e.g. no network), we might 
+                // encounter playback errors eventually, but we let it try to play locally.
+            } else {
+                HelixTransport.refreshAndSync(context, forceLoadStream = true)
+                HelixTransport.markInitialSynced()
             }
-            // Force reload so a stale/ended local stream cannot immediately fire ENDED.
-            HelixTransport.refreshAndSync(context, forceLoadStream = true)
-            HelixTransport.markInitialSynced()
         }
     }
 }
