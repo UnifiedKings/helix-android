@@ -23,12 +23,19 @@ import org.json.JSONObject
  *
  * Helix remains authoritative. This socket only observes /ws/player and asks the native
  * Media3 transport plus interested screens to refresh when a player.state snapshot arrives.
+ *
+ * The connection (with its ping and fallback polling) only runs while it is useful: while the
+ * app is on screen, or while this phone is playing audio (so it keeps following changes made
+ * on other devices). After [IDLE_DISCONNECT_MS] with neither, it disconnects completely; it
+ * reconnects and catches up as soon as either becomes true again.
  */
 object PlayerRealtime {
     private const val TAG = "HELIX_REALTIME"
     private const val RECONNECT_DELAY_MS = 1_500L
     private const val PING_INTERVAL_MS = 20_000L
     private const val FALLBACK_REFRESH_MS = 15_000L
+    // Long enough to ride out track handoffs and quick app switches without reconnecting.
+    private const val IDLE_DISCONNECT_MS = 60_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val syncRequests = Channel<Unit>(Channel.CONFLATED)
@@ -43,10 +50,13 @@ object PlayerRealtime {
     @Volatile private var lastQueueItemId: String? = null
     @Volatile private var lastIsPlaying: Boolean? = null
     @Volatile private var lastCurrentWasQueued: Boolean? = null
+    @Volatile private var appVisible = false
+    @Volatile private var localPlaybackActive = false
 
     private var reconnectJob: Job? = null
     private var pingJob: Job? = null
     private var fallbackJob: Job? = null
+    private var idleJob: Job? = null
 
     @Synchronized
     fun ensureStarted(context: Context) {
@@ -63,14 +73,73 @@ object PlayerRealtime {
                         .onFailure { Log.w(TAG, "Realtime player sync failed", it) }
                 }
             }
-            startFallbackLoop()
-            connect()
+            updateConnection()
             return
         }
 
         if (currentKey != activeConnectionKey) {
             reconnectNow()
         }
+    }
+
+    /** MainActivity reports whether the app is on screen (onStart/onStop). */
+    fun setAppVisible(visible: Boolean) {
+        if (appVisible == visible) return
+        appVisible = visible
+        updateConnection()
+    }
+
+    /** PlaybackService reports whether this phone is currently playing audio. */
+    fun setLocalPlaybackActive(active: Boolean) {
+        if (localPlaybackActive == active) return
+        localPlaybackActive = active
+        updateConnection()
+    }
+
+    private fun isNeeded(): Boolean = appVisible || localPlaybackActive
+
+    @Synchronized
+    private fun updateConnection() {
+        if (!started) return
+        if (isNeeded()) {
+            idleJob?.cancel()
+            idleJob = null
+            if (fallbackJob?.isActive != true) startFallbackLoop()
+            if (socket == null && reconnectJob?.isActive != true) {
+                reconnectAttempts = 0
+                connect()
+            }
+            return
+        }
+        val hasWork = socket != null || fallbackJob?.isActive == true || reconnectJob?.isActive == true
+        if (hasWork && idleJob?.isActive != true) {
+            idleJob = scope.launch {
+                delay(IDLE_DISCONNECT_MS)
+                disconnectIfIdle()
+            }
+        }
+    }
+
+    @Synchronized
+    private fun disconnectIfIdle() {
+        idleJob = null
+        if (isNeeded()) return
+        Log.d(TAG, "App in background and not playing; disconnecting realtime")
+        reconnectJob?.cancel()
+        reconnectJob = null
+        pingJob?.cancel()
+        pingJob = null
+        fallbackJob?.cancel()
+        fallbackJob = null
+        socketOpen = false
+        // Forget the last snapshot so the first one after reconnecting always syncs.
+        lastSequence = 0L
+        lastQueueItemId = null
+        lastIsPlaying = null
+        lastCurrentWasQueued = null
+        val old = socket
+        socket = null
+        old?.close(1000, "Idle")
     }
 
     @Synchronized
@@ -87,7 +156,7 @@ object PlayerRealtime {
         val old = socket
         socket = null
         old?.close(1000, "Helix connection changed")
-        connect()
+        if (isNeeded()) connect()
     }
 
     @Synchronized
@@ -124,6 +193,8 @@ object PlayerRealtime {
                 reconnectAttempts = 0
                 reconnectJob?.cancel()
                 startPingLoop(webSocket)
+                // Catch up on anything that changed while disconnected (e.g. in the background).
+                syncRequests.trySend(Unit)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -252,7 +323,7 @@ object PlayerRealtime {
 
     @Synchronized
     private fun scheduleReconnect() {
-        if (!started || reconnectJob?.isActive == true) return
+        if (!started || !isNeeded() || reconnectJob?.isActive == true) return
         reconnectJob = scope.launch {
             val delayMs = (RECONNECT_DELAY_MS * (1 shl minOf(reconnectAttempts, 6)))
                 .coerceAtMost(30_000L)

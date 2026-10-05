@@ -186,6 +186,11 @@ class PlaybackService : MediaSessionService() {
                 }
             }
 
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                // Keeps the realtime connection alive in the background only while audible.
+                PlayerRealtime.setLocalPlaybackActive(isPlaying)
+            }
+
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
                 // Another app took audio focus for good (transient losses such as calls are
                 // suppressed and resumed by ExoPlayer itself). Tell the backend we paused, or the
@@ -440,6 +445,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         endHandoff("service destroyed", refreshNotification = false)
+        PlayerRealtime.setLocalPlaybackActive(false)
         unregisterNoisyAudioReceiver()
 
         if (::player.isInitialized) {

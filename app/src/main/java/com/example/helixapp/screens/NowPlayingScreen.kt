@@ -54,6 +54,9 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -458,29 +461,34 @@ fun NowPlayingScreen() {
         !now?.queueItemId.isNullOrBlank() &&
         metaMediaId == now?.queueItemId
 
+    val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(controller, now?.queueItemId, metaMediaId) {
         val c = controller ?: return@LaunchedEffect
 
-        while (true) {
-            if (!userSeeking) {
-                val stillMatchesBackend =
-                    !c.currentMediaItem?.mediaId.isNullOrBlank() &&
-                    !now?.queueItemId.isNullOrBlank() &&
-                    c.currentMediaItem?.mediaId == now?.queueItemId
+        // Only poll the playback position while the app is visible; the composition stays
+        // alive in the background, and this loop would otherwise keep waking every 500 ms.
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                if (!userSeeking) {
+                    val stillMatchesBackend =
+                        !c.currentMediaItem?.mediaId.isNullOrBlank() &&
+                        !now?.queueItemId.isNullOrBlank() &&
+                        c.currentMediaItem?.mediaId == now?.queueItemId
 
-                if (stillMatchesBackend) {
-                    val d = runCatching { c.duration }.getOrDefault(0L)
-                    val p = runCatching { c.currentPosition }.getOrDefault(0L)
-                    val backendDur = now?.durationMs ?: 0L
-                    durationMs = if (d > 0) d else backendDur
-                    positionMs = if (p > 0) p else 0L
-                } else {
-                    durationMs = now?.durationMs ?: 0L
-                    positionMs = 0L
+                    if (stillMatchesBackend) {
+                        val d = runCatching { c.duration }.getOrDefault(0L)
+                        val p = runCatching { c.currentPosition }.getOrDefault(0L)
+                        val backendDur = now?.durationMs ?: 0L
+                        durationMs = if (d > 0) d else backendDur
+                        positionMs = if (p > 0) p else 0L
+                    } else {
+                        durationMs = now?.durationMs ?: 0L
+                        positionMs = 0L
+                    }
                 }
-            }
 
-            delay(500)
+                delay(500)
+            }
         }
     }
 

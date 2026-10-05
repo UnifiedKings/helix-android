@@ -31,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.example.helixapp.playback.PlayerRealtime
 import com.example.helixapp.ui.theme.AppearancePrefs
 import com.example.helixapp.ui.theme.HelixAccent
 import com.example.helixapp.ui.theme.HelixBackground
@@ -58,6 +59,18 @@ class MainActivity : ComponentActivity() {
                 HelixApp(openNowPlayingSignal = openNowPlayingSignal.intValue)
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // The realtime connection runs while the app is on screen (or audio is playing).
+        PlayerRealtime.ensureStarted(applicationContext)
+        PlayerRealtime.setAppVisible(true)
+    }
+
+    override fun onStop() {
+        PlayerRealtime.setAppVisible(false)
+        super.onStop()
     }
 
     override fun onNewIntent(intent: Intent) {
