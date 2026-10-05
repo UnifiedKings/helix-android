@@ -60,7 +60,9 @@ import com.example.helixapp.ui.theme.HelixBorder
 import com.example.helixapp.ui.theme.HelixSurfaceRaised
 import com.example.helixapp.helix.HelixTrackRequests
 import com.example.helixapp.playback.PlaybackActions
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
@@ -124,8 +126,12 @@ fun SearchScreen(
     val subsonicSongAvailable = remember { androidx.compose.runtime.mutableStateMapOf<String, Boolean>() }
     val subsonicAlbumAvailable = remember { androidx.compose.runtime.mutableStateMapOf<String, Boolean>() }
     var resolveVersion by remember { mutableStateOf(0) }
+    // The in-flight search. A new query cancels it so a slow, older response can't
+    // overwrite newer results.
+    var searchJob by remember { mutableStateOf<Job?>(null) }
 
     fun clearToRecents() {
+        searchJob?.cancel()
         loading = false
         songResults = emptyList()
         albumResults = emptyList()
@@ -215,7 +221,8 @@ fun SearchScreen(
         subsonicSongAvailable.clear()
         subsonicAlbumAvailable.clear()
 
-        scope.launch {
+        searchJob?.cancel()
+        searchJob = scope.launch {
             try {
                 val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
                 val (resp, artistResp) = withContext(Dispatchers.IO) {
@@ -223,6 +230,7 @@ fun SearchScreen(
                     val artistDeferred = async { api.ytmusicSearchArtists(q) }
                     searchDeferred.await() to artistDeferred.await()
                 }
+                if (q != lastSearchedTerm) return@launch
                 val body = resp.body().orEmpty()
                 val artistBody = artistResp.body().orEmpty()
 
@@ -254,10 +262,12 @@ fun SearchScreen(
                 )
 
                 status = if (songs.isEmpty() && albums.isEmpty() && artists.isEmpty()) "No results" else "Done"
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                status = "Search error: ${e.javaClass.simpleName}"
+                if (q == lastSearchedTerm) status = "Search error: ${e.javaClass.simpleName}"
             } finally {
-                loading = false
+                if (q == lastSearchedTerm) loading = false
             }
         }
     }
