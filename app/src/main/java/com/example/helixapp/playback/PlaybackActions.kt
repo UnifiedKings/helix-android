@@ -165,6 +165,11 @@ object PlaybackActions {
         return HelixTransport.parseQueueFromState(body)
     }
 
+    /** Save a new queue order (all queue item ids, in order) and publish the result. */
+    suspend fun reorderQueue(ctx: Context, orderedIds: List<String>) {
+        reorder(HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx)), orderedIds)
+    }
+
     private suspend fun reorder(api: HelixApi, orderedIds: List<String>) {
         val body = JSONObject().put("item_ids", JSONArray(orderedIds))
         val resp = withContext(Dispatchers.IO) { api.reorderQueue(body.toBody()) }
