@@ -313,7 +313,7 @@ class PlaybackService : MediaSessionService() {
                     return
                 }
 
-                if (shouldRetryTemporaryStreamError(error, uri)) {
+                if (isRetryableStreamError(uri, httpStatus)) {
                     if (lastStreamErrorUri != uri) {
                         lastStreamErrorUri = uri
                         streamErrorRetryCount = 0
@@ -544,26 +544,6 @@ class PlaybackService : MediaSessionService() {
         )
     }
 
-    private fun shouldRetryTemporaryStreamError(
-        error: PlaybackException,
-        uri: String,
-    ): Boolean {
-        if (!uri.contains("/api/stream/")) return false
-        if (error.errorCodeName != "ERROR_CODE_IO_BAD_HTTP_STATUS") return false
-
-        val msg = buildString {
-            append(error.message.orEmpty())
-            var cause = error.cause
-            while (cause != null) {
-                append(' ')
-                append(cause.message.orEmpty())
-                cause = cause.cause
-            }
-        }
-
-        return msg.contains("404") || msg.contains("503")
-    }
-
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -657,6 +637,17 @@ class PlaybackService : MediaSessionService() {
         private const val MAX_EARLY_END_RETRIES = 3
 
         private const val HANDOFF_MAX_MS = 30_000L
+
+        /**
+         * HTTP statuses on a Helix stream worth retrying: 404 while a station's next item is
+         * still being prepared or the queue is rebuilt, and 502/503/504 for a busy server or a
+         * reverse-proxy hiccup.
+         */
+        private val RETRYABLE_STREAM_STATUSES = setOf(404, 502, 503, 504)
+
+        /** Whether a stream error should be retried. Reads the status code rather than error text. */
+        internal fun isRetryableStreamError(uri: String, httpStatus: Int?): Boolean =
+            uri.contains("/api/stream/") && httpStatus in RETRYABLE_STREAM_STATUSES
 
         private const val TASK_REMOVAL_PAUSE_TIMEOUT_MS = 2_000L
     }
