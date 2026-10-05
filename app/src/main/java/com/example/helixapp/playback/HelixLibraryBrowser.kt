@@ -7,8 +7,10 @@ import com.example.helixapp.HelixClient
 import com.example.helixapp.HelixHttpException
 import com.example.helixapp.HelixPrefs
 import com.example.helixapp.HistoryItemUi
+import com.example.helixapp.SearchSong
 import com.example.helixapp.helix.HelixTrackRequests
 import com.example.helixapp.parseHistoryPage
+import com.example.helixapp.parseSongs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -38,6 +40,7 @@ object HelixLibraryBrowser {
     // Played items need details the id can't carry (a history track's metadata, a station's
     // name); remember them from the last listing.
     private val recentById = HashMap<String, HistoryItemUi>()
+    private val songsById = HashMap<String, SearchSong>()
     private val stationNames = HashMap<String, String>()
 
     fun root(): MediaItem = folder(ROOT_ID, "Helix")
@@ -76,6 +79,10 @@ object HelixLibraryBrowser {
                 val item = recentById[rest] ?: return false
                 PlaybackActions.playTrack(ctx, item.toTrackRequest())
             }
+            "song" -> {
+                val song = songsById[rest] ?: return false
+                PlaybackActions.playTrack(ctx, HelixTrackRequests.playOrQueueBodyFromSearchSong(HelixPrefs.getBaseUrl(ctx), song))
+            }
             else -> return false
         }
         return true
@@ -83,7 +90,27 @@ object HelixLibraryBrowser {
 
     /** Whether [mediaId] is a playable item from this browser (as opposed to a queue item id). */
     fun isPlayableId(mediaId: String): Boolean =
-        mediaId.substringBefore(":", "") in setOf("queue", "station", "playlist", "recent")
+        mediaId.substringBefore(":", "") in setOf("queue", "station", "playlist", "recent", "song")
+
+    /**
+     * Search results for Android Auto's search button: the user's playlists and stations whose
+     * names contain the query, then songs from Helix's search.
+     */
+    suspend fun search(ctx: Context, query: String): List<MediaItem> {
+        val q = VoiceSearch.normalize(query)
+        if (q.isBlank()) return emptyList()
+        val named = (playlistItems(fetch(ctx) { it.listPlaylists() }) + stationItems(ctx, fetch(ctx) { it.listStations() }))
+            .filter { VoiceSearch.normalize(it.mediaMetadata.title.toString()).contains(q) }
+        return named + songItems(ctx, fetch(ctx) { it.ytmusicSearch(query, songLimit = 15, albumLimit = 1) })
+    }
+
+    internal fun songItems(ctx: Context?, json: String): List<MediaItem> =
+        parseSongs(json).filter { it.videoId.isNotBlank() || it.subsonicSongId.isNotBlank() }.map { song ->
+            val key = song.videoId.ifBlank { "subsonic-${song.subsonicSongId}" }
+            songsById[key] = song
+            val subtitle = listOf(song.artist, song.album).filter { it.isNotBlank() }.joinToString(" • ")
+            playable("song:$key", song.title, subtitle, ctx?.let { artUrl(HelixPrefs.getBaseUrl(it), song.thumbnailUrl) })
+        }
 
     private suspend fun queueItems(ctx: Context): List<MediaItem> {
         PlayerStateStore.refresh(ctx)

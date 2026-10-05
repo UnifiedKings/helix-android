@@ -93,9 +93,7 @@ class HelixSessionCallback(
     ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = scope.future {
         try {
             val all = HelixLibraryBrowser.children(ctx, parentId)
-            val from = (page * pageSize).coerceAtMost(all.size)
-            val to = if (pageSize > 0) (from + pageSize).coerceAtMost(all.size) else all.size
-            LibraryResult.ofItemList(all.subList(from, to), params)
+            LibraryResult.ofItemList(pageOf(all, page, pageSize), params)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -112,6 +110,12 @@ class HelixSessionCallback(
         startIndex: Int,
         startPositionMs: Long,
     ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+        searchQueryOf(mediaItems)?.let { item ->
+            return scope.future {
+                playFromSearch(item)
+                MediaSession.MediaItemsWithStartPosition(currentAsMediaItems(), 0, C.TIME_UNSET)
+            }
+        }
         // Helix's own controller loads stream items (with a URI); leave those to Media3.
         if (!isBrowseRequest(mediaItems)) {
             return super<MediaLibrarySession.Callback>.onSetMediaItems(mediaSession, controller, mediaItems, startIndex, startPositionMs)
@@ -128,6 +132,12 @@ class HelixSessionCallback(
         controller: MediaSession.ControllerInfo,
         mediaItems: MutableList<MediaItem>,
     ): ListenableFuture<MutableList<MediaItem>> {
+        searchQueryOf(mediaItems)?.let { item ->
+            return scope.future {
+                playFromSearch(item)
+                currentAsMediaItems().toMutableList()
+            }
+        }
         if (!isBrowseRequest(mediaItems)) {
             return super<MediaLibrarySession.Callback>.onAddMediaItems(mediaSession, controller, mediaItems)
         }
@@ -140,6 +150,76 @@ class HelixSessionCallback(
     /** Browsers send bare browse ids; Media3 strips stream URIs from other apps' items. */
     private fun isBrowseRequest(items: List<MediaItem>): Boolean =
         items.isNotEmpty() && items.all { it.localConfiguration == null && HelixLibraryBrowser.isPlayableId(it.mediaId) }
+
+    /**
+     * A play-from-search request ("Hey Google, play X on Helix"): Media3 delivers it as a
+     * single item with no id and the spoken phrase as its search query.
+     */
+    private fun searchQueryOf(items: List<MediaItem>): MediaItem? =
+        items.singleOrNull()?.takeIf {
+            it.mediaId.isBlank() && it.localConfiguration == null && it.requestMetadata.searchQuery != null
+        }
+
+    private suspend fun playFromSearch(item: MediaItem) {
+        val query = VoiceSearch.parse(item.requestMetadata.searchQuery, VoiceSearch.Hints.from(item.requestMetadata.extras))
+        try {
+            VoiceSearch.play(ctx, query, scope)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("HELIX_PLAYER", "Voice search for $query failed: ${e.javaClass.simpleName}: ${e.message}", e)
+            throw e
+        }
+    }
+
+    // Android Auto's search button: results are fetched in onSearch and paged out in
+    // onGetSearchResult.
+    private val searchResults = java.util.concurrent.ConcurrentHashMap<String, List<MediaItem>>()
+
+    override fun onSearch(
+        session: MediaLibrarySession,
+        browser: MediaSession.ControllerInfo,
+        query: String,
+        params: LibraryParams?,
+    ): ListenableFuture<LibraryResult<Void>> = scope.future {
+        try {
+            val items = HelixLibraryBrowser.search(ctx, query)
+            searchResults.clear()
+            searchResults[query] = items
+            session.notifySearchResultChanged(browser, query, items.size, params)
+            LibraryResult.ofVoid()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("HELIX_PLAYER", "Search for $query failed", e)
+            LibraryResult.ofError(SessionError.ERROR_IO)
+        }
+    }
+
+    override fun onGetSearchResult(
+        session: MediaLibrarySession,
+        browser: MediaSession.ControllerInfo,
+        query: String,
+        page: Int,
+        pageSize: Int,
+        params: LibraryParams?,
+    ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = scope.future {
+        try {
+            val all = searchResults[query] ?: HelixLibraryBrowser.search(ctx, query).also { searchResults[query] = it }
+            LibraryResult.ofItemList(pageOf(all, page, pageSize), params)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("HELIX_PLAYER", "Search for $query failed", e)
+            LibraryResult.ofError(SessionError.ERROR_IO)
+        }
+    }
+
+    private fun pageOf(all: List<MediaItem>, page: Int, pageSize: Int): List<MediaItem> {
+        val from = (page * pageSize).coerceAtMost(all.size)
+        val to = if (pageSize > 0) (from + pageSize).coerceAtMost(all.size) else all.size
+        return all.subList(from, to)
+    }
 
     private suspend fun startFromBrowser(mediaId: String) {
         Log.i("HELIX_PLAYER", "Playing $mediaId from a media browser")
@@ -267,6 +347,8 @@ class HelixSessionCallback(
             "com.google.android.projection.gearhead", // Android Auto
             "com.google.android.carassistant",
             "com.google.android.googlequicksearchbox", // Google Assistant
+            "com.google.android.apps.bard", // Gemini
+            "com.google.android.apps.googleassistant",
             "com.android.systemui",
         )
     }

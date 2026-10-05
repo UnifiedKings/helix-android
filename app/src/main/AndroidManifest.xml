@@ -24,6 +24,20 @@
             </intent-filter>
         </activity>
 
+        <!-- "Hey Google, play X on Helix": hands the request to VoiceSearch and closes. -->
+        <activity
+            android:name=".playback.VoiceSearchActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <!-- Exported so Android Auto can browse and control playback; HelixSessionCallback
              only accepts known media surfaces. -->
         <service

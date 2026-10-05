@@ -593,7 +593,7 @@ private fun parseArtistDetail(json: String, browseId: String): ArtistDetailUi {
     )
 }
 
-private fun parsePopularTracks(json: String): List<SearchSong> {
+internal fun parsePopularTracks(json: String): List<SearchSong> {
     val root = JSONObject(json)
     val arr = root.optJSONArray("tracks") ?: JSONArray()
     val out = ArrayList<SearchSong>(arr.length())

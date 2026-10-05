@@ -919,7 +919,7 @@ private fun ArtistRow(
 }
 
 
-private fun parseArtists(json: String): List<SearchArtist> {
+internal fun parseArtists(json: String): List<SearchArtist> {
     val root = JSONObject(json)
     val artists = root.optJSONArray("artists") ?: JSONArray()
     val out = ArrayList<SearchArtist>(artists.length())
@@ -946,7 +946,7 @@ private fun parseArtists(json: String): List<SearchArtist> {
     return out
 }
 
-private fun parseSongs(json: String): List<SearchSong> {
+internal fun parseSongs(json: String): List<SearchSong> {
     val root = JSONObject(json)
     val songs = root.optJSONArray("songs") ?: JSONArray()
     val out = ArrayList<SearchSong>(songs.length())
@@ -979,7 +979,7 @@ private fun parseSongs(json: String): List<SearchSong> {
     return out
 }
 
-private fun parseAlbums(json: String): List<SearchAlbum> {
+internal fun parseAlbums(json: String): List<SearchAlbum> {
     val root = JSONObject(json)
     val albums = root.optJSONArray("albums") ?: JSONArray()
     val out = ArrayList<SearchAlbum>(albums.length())
