@@ -4,10 +4,21 @@ import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaLibraryService.LibraryParams
+import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSession.ConnectionResult
+import androidx.media3.session.SessionError
 import androidx.media3.session.SessionResult
+import com.google.common.collect.ImmutableList
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
 /**
  * Media3 callback wiring lockscreen / headset / notification controls to Helix backend.
@@ -19,12 +30,17 @@ import kotlinx.coroutines.launch
 class HelixSessionCallback(
     private val ctx: Context,
     private val scope: CoroutineScope,
-) : MediaSession.Callback {
+) : MediaLibrarySession.Callback {
     override fun onConnect(
         session: MediaSession,
         controller: MediaSession.ControllerInfo,
     ): ConnectionResult {
-        val base = super<MediaSession.Callback>.onConnect(session, controller)
+        // The service is exported for Android Auto; only let known media surfaces connect.
+        if (!isAllowedController(controller)) {
+            Log.w("HELIX_PLAYER", "Rejecting media controller from ${controller.packageName}")
+            return ConnectionResult.reject()
+        }
+        val base = super<MediaLibrarySession.Callback>.onConnect(session, controller)
         // Android system UI has very limited action slots. If shuffle/repeat are exposed they can
         // steal the only "extra" slot, hiding Next. Prefer transport actions.
         val b = Player.Commands.Builder().addAll(base.availablePlayerCommands)
@@ -40,6 +56,105 @@ class HelixSessionCallback(
             base.availableSessionCommands,
             b.build(),
         )
+    }
+
+    private fun isAllowedController(controller: MediaSession.ControllerInfo): Boolean =
+        controller.packageName == ctx.packageName ||
+            controller.isTrusted ||
+            controller.packageName in ALLOWED_CONTROLLER_PACKAGES
+
+    // ---- Browsing (Android Auto and other media browsers) -----------------------------------
+
+    override fun onGetLibraryRoot(
+        session: MediaLibrarySession,
+        browser: MediaSession.ControllerInfo,
+        params: LibraryParams?,
+    ): ListenableFuture<LibraryResult<MediaItem>> =
+        Futures.immediateFuture(LibraryResult.ofItem(HelixLibraryBrowser.root(), params))
+
+    override fun onGetItem(
+        session: MediaLibrarySession,
+        browser: MediaSession.ControllerInfo,
+        mediaId: String,
+    ): ListenableFuture<LibraryResult<MediaItem>> {
+        val item = (listOf(HelixLibraryBrowser.root()) + HelixLibraryBrowser.topLevel()).firstOrNull { it.mediaId == mediaId }
+        return Futures.immediateFuture(
+            if (item != null) LibraryResult.ofItem(item, null) else LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
+        )
+    }
+
+    override fun onGetChildren(
+        session: MediaLibrarySession,
+        browser: MediaSession.ControllerInfo,
+        parentId: String,
+        page: Int,
+        pageSize: Int,
+        params: LibraryParams?,
+    ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> = scope.future {
+        try {
+            val all = HelixLibraryBrowser.children(ctx, parentId)
+            val from = (page * pageSize).coerceAtMost(all.size)
+            val to = if (pageSize > 0) (from + pageSize).coerceAtMost(all.size) else all.size
+            LibraryResult.ofItemList(all.subList(from, to), params)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("HELIX_PLAYER", "Browsing $parentId failed", e)
+            LibraryResult.ofError(SessionError.ERROR_IO)
+        }
+    }
+
+    /** A browse item was played (e.g. tapped in Android Auto): start it through Helix. */
+    override fun onSetMediaItems(
+        mediaSession: MediaSession,
+        controller: MediaSession.ControllerInfo,
+        mediaItems: MutableList<MediaItem>,
+        startIndex: Int,
+        startPositionMs: Long,
+    ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+        // Helix's own controller loads stream items (with a URI); leave those to Media3.
+        if (!isBrowseRequest(mediaItems)) {
+            return super<MediaLibrarySession.Callback>.onSetMediaItems(mediaSession, controller, mediaItems, startIndex, startPositionMs)
+        }
+        return scope.future {
+            val target = mediaItems.getOrNull(startIndex) ?: mediaItems.first()
+            startFromBrowser(target.mediaId)
+            MediaSession.MediaItemsWithStartPosition(currentAsMediaItems(), 0, C.TIME_UNSET)
+        }
+    }
+
+    override fun onAddMediaItems(
+        mediaSession: MediaSession,
+        controller: MediaSession.ControllerInfo,
+        mediaItems: MutableList<MediaItem>,
+    ): ListenableFuture<MutableList<MediaItem>> {
+        if (!isBrowseRequest(mediaItems)) {
+            return super<MediaLibrarySession.Callback>.onAddMediaItems(mediaSession, controller, mediaItems)
+        }
+        return scope.future {
+            startFromBrowser(mediaItems.first().mediaId)
+            currentAsMediaItems().toMutableList()
+        }
+    }
+
+    /** Browsers send bare browse ids; Media3 strips stream URIs from other apps' items. */
+    private fun isBrowseRequest(items: List<MediaItem>): Boolean =
+        items.isNotEmpty() && items.all { it.localConfiguration == null && HelixLibraryBrowser.isPlayableId(it.mediaId) }
+
+    private suspend fun startFromBrowser(mediaId: String) {
+        Log.i("HELIX_PLAYER", "Playing $mediaId from a media browser")
+        if (!HelixLibraryBrowser.play(ctx, mediaId)) throw IllegalArgumentException("Unknown media id $mediaId")
+    }
+
+    /**
+     * The backend's new current item as the Media3 item the player is (or is about to be)
+     * playing. Media3 hands this back to the player; it's tagged so HelixForwardingPlayer
+     * ignores it instead of reloading what the coordinator already loaded.
+     */
+    private fun currentAsMediaItems(): List<MediaItem> {
+        val now = PlayerStateStore.state.value?.now ?: throw IllegalStateException("Nothing is playing")
+        val item = PlaybackController.mediaItemFor(ctx, now)
+        return listOf(item.buildUpon().setRequestMetadata(BROWSER_REPEAT).build())
     }
 
     @OptIn(UnstableApi::class)
@@ -135,5 +250,24 @@ class HelixSessionCallback(
 
             else -> return SessionResult.RESULT_SUCCESS
         }
+    }
+
+    companion object {
+        private const val EXTRA_BROWSER_REPEAT = "com.example.helixapp.BROWSER_REPEAT"
+        private val BROWSER_REPEAT = MediaItem.RequestMetadata.Builder()
+            .setExtras(android.os.Bundle().apply { putBoolean(EXTRA_BROWSER_REPEAT, true) })
+            .build()
+
+        /** True for the item [onSetMediaItems] hands back after the coordinator already loaded it. */
+        fun isBrowserRepeat(item: MediaItem): Boolean =
+            item.requestMetadata.extras?.getBoolean(EXTRA_BROWSER_REPEAT) == true
+
+        /** Media surfaces allowed to connect besides Helix itself and trusted system callers. */
+        private val ALLOWED_CONTROLLER_PACKAGES = setOf(
+            "com.google.android.projection.gearhead", // Android Auto
+            "com.google.android.carassistant",
+            "com.google.android.googlequicksearchbox", // Google Assistant
+            "com.android.systemui",
+        )
     }
 }

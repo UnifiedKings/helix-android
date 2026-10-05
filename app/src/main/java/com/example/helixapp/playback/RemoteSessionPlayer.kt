@@ -90,6 +90,14 @@ class RemoteSessionPlayer(
             else -> Futures.immediateVoidFuture()
         }
 
+    // Android Auto starting a browse item: HelixSessionCallback already sent it to the backend,
+    // and the mirrored state follows from PlayerStateStore.
+    override fun handleSetMediaItems(
+        mediaItems: MutableList<MediaItem>,
+        startIndex: Int,
+        startPositionMs: Long,
+    ): ListenableFuture<*> = Futures.immediateVoidFuture()
+
     override fun handleStop(): ListenableFuture<*> = Futures.immediateVoidFuture()
 
     override fun handleRelease(): ListenableFuture<*> {
@@ -118,6 +126,8 @@ class RemoteSessionPlayer(
                 Player.COMMAND_GET_CURRENT_MEDIA_ITEM,
                 Player.COMMAND_GET_TIMELINE,
                 Player.COMMAND_GET_METADATA,
+                Player.COMMAND_SET_MEDIA_ITEM,
+                Player.COMMAND_CHANGE_MEDIA_ITEMS,
                 Player.COMMAND_STOP,
                 Player.COMMAND_RELEASE,
             )

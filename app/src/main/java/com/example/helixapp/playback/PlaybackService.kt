@@ -15,6 +15,7 @@ import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
+import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DataSourceBitmapLoader
@@ -26,7 +27,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.CacheBitmapLoader
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
+import androidx.media3.session.MediaLibraryService
 import com.example.helixapp.AuthState
 import com.example.helixapp.HelixClient
 import com.example.helixapp.HelixPrefs
@@ -43,11 +44,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
-class PlaybackService : MediaSessionService() {
+class PlaybackService : MediaLibraryService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    private var session: MediaSession? = null
+    private var session: MediaLibrarySession? = null
     private lateinit var player: ExoPlayer
     private lateinit var httpFactory: DefaultHttpDataSource.Factory
 
@@ -157,8 +158,7 @@ class PlaybackService : MediaSessionService() {
             )
         )
 
-        session = MediaSession.Builder(this, sessionPlayer)
-            .setCallback(HelixSessionCallback(this, scope))
+        session = MediaLibrarySession.Builder(this, sessionPlayer, HelixSessionCallback(this, scope))
             .setSessionActivity(buildNowPlayingPendingIntent())
             .setBitmapLoader(bitmapLoader)
             .build()
@@ -503,7 +503,7 @@ class PlaybackService : MediaSessionService() {
         super.onTaskRemoved(rootIntent)
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession {
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession {
         return requireNotNull(session)
     }
 
@@ -644,6 +644,23 @@ class PlaybackService : MediaSessionService() {
                 return
             }
             super.play()
+        }
+
+        // After a browser (Android Auto) starts something, the coordinator has already loaded
+        // it; Media3 then hands the same item back. Ignore that so playback doesn't restart.
+        override fun setMediaItems(mediaItems: MutableList<MediaItem>, resetPosition: Boolean) {
+            if (isRepeatOfCurrent(mediaItems)) return
+            super.setMediaItems(mediaItems, resetPosition)
+        }
+
+        override fun setMediaItems(mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long) {
+            if (isRepeatOfCurrent(mediaItems)) return
+            super.setMediaItems(mediaItems, startIndex, startPositionMs)
+        }
+
+        private fun isRepeatOfCurrent(items: List<MediaItem>): Boolean {
+            val item = items.singleOrNull() ?: return false
+            return HelixSessionCallback.isBrowserRepeat(item) && item.mediaId == currentMediaItem?.mediaId
         }
 
         override fun hasNextMediaItem(): Boolean {

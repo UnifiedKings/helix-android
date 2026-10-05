@@ -24,13 +24,20 @@
             </intent-filter>
         </activity>
 
+        <!-- Exported so Android Auto can browse and control playback; HelixSessionCallback
+             only accepts known media surfaces. -->
         <service
             android:name=".playback.PlaybackService"
-            android:exported="false"
+            android:exported="true"
             android:foregroundServiceType="mediaPlayback">
             <intent-filter>
-                <action android:name="androidx.media3.session.MediaSessionService" />
+                <action android:name="androidx.media3.session.MediaLibraryService" />
+                <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
+
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
     </application>
 </manifest>

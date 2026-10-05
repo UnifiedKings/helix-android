@@ -74,6 +74,7 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.5.1")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.7.3")
 
     implementation(libs.retrofit)
     implementation(libs.retrofit.converter.scalars)

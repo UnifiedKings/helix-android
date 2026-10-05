@@ -124,6 +124,19 @@ object PlaybackController {
             .onFailure { Log.w("HELIX_PLAYER", "MediaController release failed", it) }
     }
 
+    /** The Media3 item HelixTransport loads for a backend now-playing entry. */
+    fun mediaItemFor(ctx: Context, now: NowPlayingUi): MediaItem {
+        val base = com.example.helixapp.HelixPrefs.getBaseUrl(ctx).trimEnd('/')
+        return QueueMediaItem(
+            queueItemId = now.queueItemId,
+            url = "$base/api/stream/${now.queueItemId}",
+            title = now.title,
+            artist = now.artist,
+            album = now.album,
+            artworkUrl = com.example.helixapp.HelixImages.absoluteUrl(base, now.artUrl),
+        ).toMediaItem()
+    }
+
     private fun QueueMediaItem.toMediaItem(): MediaItem {
         val meta = MediaMetadata.Builder()
             .setTitle(title)
