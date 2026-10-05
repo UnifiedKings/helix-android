@@ -5,8 +5,11 @@ import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 
-/** The Helix backend answered, but with a non-2xx status. */
-class HelixHttpException(val code: Int) : IOException("HTTP $code")
+/**
+ * The Helix backend answered, but with a non-2xx status. [detail] is the server's short
+ * explanation (FastAPI's {"detail": "..."}), if it sent one.
+ */
+class HelixHttpException(val code: Int, val detail: String = "") : IOException("HTTP $code")
 
 /** A request succeeded but the expected result never showed up (e.g. a station never started). */
 class HelixTimeoutException(message: String) : IOException(message)
@@ -21,7 +24,7 @@ class HelixPartialException(message: String, cause: Throwable) : IOException(mes
 fun Throwable.toUserMessage(action: String): String = when (this) {
     is HelixHttpException ->
         if (code == 401) "$action failed: your session expired. Log in again in Settings."
-        else "$action failed (HTTP $code)"
+        else "$action failed (HTTP $code)" + (if (detail.isNotBlank()) ": $detail" else "")
     is HelixTimeoutException -> message ?: "$action timed out"
     is HelixPartialException -> message ?: "$action only partly worked"
     is UnknownHostException, is ConnectException, is SocketTimeoutException ->

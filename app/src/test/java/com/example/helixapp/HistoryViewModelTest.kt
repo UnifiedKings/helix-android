@@ -37,6 +37,8 @@ class HistoryViewModelTest {
             val items = (0 until 2).map { item("${event ?: "all"}-${offset + it}") }
             return HistoryPage(items, hasMore)
         }
+
+        override suspend fun album(browseId: String): AlbumView = error("not used")
     }
 
     private var now = 1_000_000L

@@ -55,7 +55,7 @@ import org.json.JSONObject
 @Composable
 fun HistoryScreen(
     onNavigateToNowPlaying: () -> Unit = {},
-    viewModel: HistoryViewModel = helixViewModel(::HistoryViewModel),
+    viewModel: HistoryViewModel = helixViewModel { HistoryViewModel(it) },
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()

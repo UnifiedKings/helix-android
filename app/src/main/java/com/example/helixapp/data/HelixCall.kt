@@ -20,9 +20,20 @@ import retrofit2.Response
 internal suspend fun helixCall(ctx: Context, request: suspend (HelixApi) -> Response<String>): String {
     val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
     val resp = withContext(Dispatchers.IO) { request(api) }
-    if (!resp.isSuccessful) throw HelixHttpException(resp.code())
+    if (!resp.isSuccessful) {
+        val errorBody = withContext(Dispatchers.IO) { runCatching { resp.errorBody()?.string() }.getOrNull() }
+        throw HelixHttpException(resp.code(), errorDetail(errorBody))
+    }
     return resp.body().orEmpty()
 }
+
+/** The "detail" of a FastAPI error body when it's a short string; "" otherwise. */
+internal fun errorDetail(body: String?): String {
+    val detail = runCatching { JSONObject(body.orEmpty()).opt("detail") }.getOrNull()
+    return (detail as? String)?.trim()?.takeIf { it.length <= MAX_DETAIL } ?: ""
+}
+
+private const val MAX_DETAIL = 160
 
 private val JSON = "application/json; charset=utf-8".toMediaType()
 

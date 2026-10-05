@@ -190,6 +190,19 @@ internal fun parseAlbumView(json: String): AlbumView {
     )
 }
 
+// ---- Subsonic --------------------------------------------------------------------------
+
+/** /api/subsonic/resolve: whether each requested "song:…"/"album:…" key is in Subsonic. */
+internal fun parseSubsonicResolve(json: String): Map<String, Boolean> {
+    val root = JSONObject(json)
+    val out = LinkedHashMap<String, Boolean>()
+    for (section in listOf("songs", "albums")) {
+        val obj = root.optJSONObject(section) ?: continue
+        obj.keys().forEach { key -> out[key] = obj.optJSONObject(key)?.optBoolean("available", false) ?: false }
+    }
+    return out
+}
+
 // ---- Stations ---------------------------------------------------------------------------
 
 internal fun parseStations(json: String): List<StationUi> {

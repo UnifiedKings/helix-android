@@ -1,7 +1,6 @@
 package com.example.helixapp
 
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -35,8 +34,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -51,7 +48,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.layout.ContentScale
@@ -59,12 +55,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.helixapp.helix.HelixTrackRequests
 import com.example.helixapp.playback.PlaybackActions
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.json.JSONObject
 import com.example.helixapp.ui.theme.HelixAccent
 import com.example.helixapp.ui.theme.HelixBackground
@@ -75,100 +66,21 @@ import com.example.helixapp.ui.theme.HelixMuted
 fun AlbumScreen(
     browseId: String,
     onNavigateToNowPlaying: () -> Unit = {},
+    viewModel: AlbumViewModel = helixViewModel(key = "album:$browseId") { AlbumViewModel(it, browseId) },
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val back = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
-    val snack = remember { SnackbarHostState() }
-
-    var loading by remember { mutableStateOf(true) }
-    var err by remember { mutableStateOf<String?>(null) }
-
-    var title by remember { mutableStateOf("") }
-    var artist by remember { mutableStateOf("") }
-    var year by remember { mutableStateOf("") }
-    var thumbUrl by remember { mutableStateOf("") }
-    var tracks by remember { mutableStateOf(emptyList<AlbumTrack>()) }
-    val subsonicSongAvailable = remember { androidx.compose.runtime.mutableStateMapOf<String, Boolean>() }
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val loading = state.loading
+    val err = state.error
+    val title = state.album?.title.orEmpty()
+    val artist = state.album?.artist.orEmpty()
+    val year = state.album?.year.orEmpty()
+    val thumbUrl = state.album?.thumbnailUrl.orEmpty()
+    val tracks = state.tracks
 
     fun absoluteThumb(baseUrl: String): String = HelixImages.absoluteUrl(baseUrl, thumbUrl)
-
-    fun resolveSubsonicAvailability(currentTracks: List<AlbumTrack>, albumTitle: String, albumArtist: String) {
-        subsonicSongAvailable.clear()
-        if (currentTracks.isEmpty()) return
-        if (HelixPrefs.getSessionToken(ctx).isNullOrBlank()) return
-
-        scope.launch {
-            try {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val payload = JSONObject().apply {
-                    put("songs", JSONArray().apply {
-                        for (track in currentTracks) {
-                            val keyId = track.videoId.trim()
-                            if (keyId.isBlank()) continue
-                            put(JSONObject().apply {
-                                put("key", "song:" + keyId)
-                                put("title", track.title)
-                                put("artist", track.artist.trim().ifBlank { albumArtist.trim() })
-                                if (albumTitle.isNotBlank()) put("album", albumTitle)
-                            })
-                        }
-                    })
-                    put("albums", JSONArray())
-                }
-
-                val rb = payload.toString().toRequestBody("application/json".toMediaType())
-                val resp = withContext(Dispatchers.IO) { api.subsonicResolve(rb) }
-                if (!resp.isSuccessful) return@launch
-
-                val body = resp.body().orEmpty()
-                val obj = JSONObject(body)
-                val songsObj = obj.optJSONObject("songs") ?: return@launch
-                songsObj.keys().forEach { key ->
-                    val entry = songsObj.optJSONObject(key)
-                    subsonicSongAvailable[key] = entry?.optBoolean("available", false) ?: false
-                }
-            } catch (_: Exception) {
-                // Best-effort only. If resolve fails, we just don't show badges.
-            }
-        }
-    }
-
-    fun loadAlbum() {
-        if (browseId.isBlank()) {
-            err = "Missing album id"
-            loading = false
-            return
-        }
-        loading = true
-        err = null
-        scope.launch {
-            try {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val resp = withContext(Dispatchers.IO) { api.albumView(browseId) }
-                if (!resp.isSuccessful) {
-                    err = "Failed (HTTP ${resp.code()})"
-                    return@launch
-                }
-                val album = parseAlbumView(resp.body().orEmpty())
-                title = album.title
-                artist = album.artist
-                year = album.year
-                thumbUrl = album.thumbnailUrl
-                tracks = album.tracks
-                resolveSubsonicAvailability(album.tracks, title, artist)
-            } catch (e: Exception) {
-                err = "Error: ${e.javaClass.simpleName}: ${e.message}"
-            } finally {
-                loading = false
-            }
-        }
-    }
-
-    // Initial load / refresh when browseId changes
-    androidx.compose.runtime.LaunchedEffect(browseId) {
-        loadAlbum()
-    }
 
     fun trackToSearchSong(track: AlbumTrack): SearchSong {
         return SearchSong(
@@ -215,42 +127,7 @@ fun AlbumScreen(
     }
 
     fun addSingleToSubsonic(track: AlbumTrack) {
-        scope.launch {
-            try {
-                val trackArtist = track.artist.trim()
-                val albumArtist = artist.trim().ifBlank { trackArtist }
-                if (trackArtist.isBlank() && albumArtist.isBlank()) {
-                    snack.showNonBlocking(scope, "Missing artist metadata for ${track.title}")
-                    return@launch
-                }
-                if (track.videoId.isBlank()) {
-                    snack.showNonBlocking(scope, "Missing video id for ${track.title}")
-                    return@launch
-                }
-
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val payload = JSONObject().apply {
-                    put("yt_video_id", track.videoId)
-                    put("title", track.title)
-                    put("artist", trackArtist.ifBlank { albumArtist })
-                    put("album_artist", albumArtist.ifBlank { trackArtist })
-                    if (title.isNotBlank()) put("album", title)
-                    val art = absoluteThumb(HelixPrefs.getBaseUrl(ctx))
-                    if (art.isNotBlank()) put("art_url", art)
-                }
-                val body = payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
-                val resp = withContext(Dispatchers.IO) { api.subsonicAddTrack(body) }
-                if (!resp.isSuccessful) {
-                    val errorText = runCatching { resp.errorBody()?.string().orEmpty() }.getOrDefault("")
-                    val suffix = errorText.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""
-                    snack.showNonBlocking(scope, "Add to Subsonic failed (HTTP ${resp.code()})$suffix")
-                    return@launch
-                }
-                snack.showNonBlocking(scope, "Added to Subsonic: ${track.title}")
-            } catch (e: Exception) {
-                snack.showNonBlocking(scope, "Add to Subsonic error: ${e.javaClass.simpleName}")
-            }
-        }
+        viewModel.addToSubsonic(track, artUrl = absoluteThumb(HelixPrefs.getBaseUrl(ctx)))
     }
 
     fun playAlbum() {
@@ -273,13 +150,10 @@ fun AlbumScreen(
 
     val baseUrl = HelixPrefs.getBaseUrl(ctx)
     val albumDurationSeconds = tracks.sumOf { it.durationSeconds.coerceAtLeast(0) }
-    val identifiableTracks = tracks.filter { it.videoId.isNotBlank() }
-    val albumFullyInSubsonic = identifiableTracks.isNotEmpty() &&
-        identifiableTracks.all { subsonicSongAvailable["song:" + it.videoId] == true }
+    val albumFullyInSubsonic = state.fullyInSubsonic
 
     Scaffold(
         containerColor = HelixBackground,
-        snackbarHost = { SnackbarHost(snack) },
     ) { padding ->
         LazyColumn(
             modifier = Modifier
@@ -341,7 +215,7 @@ fun AlbumScreen(
                         onPlayNext = { playNextSingle(t) },
                         onQueue = { queueSingle(t) },
                         onAddToSubsonic = { addSingleToSubsonic(t) },
-                        subsonicAvailable = subsonicSongAvailable["song:" + t.videoId] == true,
+                        subsonicAvailable = state.trackInSubsonic(t),
                     )
                 }
             } else if (!loading && err == null) {

@@ -110,7 +110,7 @@ data class PlaylistTrackUi(
     val mbArtistId: String,
 )
 
-internal data class PlaylistDetailParsed(
+data class PlaylistDetailParsed(
     val name: String,
     val thumbnailUrl: String,
     val systemKey: String,
@@ -140,7 +140,7 @@ data class HistoryItemUi(
 
 data class HistoryPage(val items: List<HistoryItemUi>, val hasMore: Boolean)
 
-internal data class ArtistDetailUi(
+data class ArtistDetailUi(
     val browseId: String,
     val name: String,
     val thumbnailUrl: String,
@@ -148,7 +148,7 @@ internal data class ArtistDetailUi(
     val resolutionStatus: String,
 )
 
-internal data class SimilarArtistUi(
+data class SimilarArtistUi(
     val name: String,
     val mbArtistId: String = "",
     val browseId: String = "",
@@ -156,7 +156,7 @@ internal data class SimilarArtistUi(
 )
 
 /** /api/album/{browse_id}. */
-internal data class AlbumView(
+data class AlbumView(
     val title: String,
     val artist: String,
     val year: String,
@@ -164,7 +164,7 @@ internal data class AlbumView(
     val tracks: List<AlbumTrack>,
 )
 
-internal data class AlbumTrack(
+data class AlbumTrack(
     val pos: Int,
     val title: String,
     val artist: String,

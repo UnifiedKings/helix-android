@@ -52,7 +52,7 @@ fun PlaylistsScreen(
     onOpenPlaylist: (String) -> Unit,
     onNavigateToNowPlaying: () -> Unit = {},
     createRequestKey: Int = 0,
-    viewModel: PlaylistsViewModel = helixViewModel(::PlaylistsViewModel),
+    viewModel: PlaylistsViewModel = helixViewModel { PlaylistsViewModel(it) },
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
