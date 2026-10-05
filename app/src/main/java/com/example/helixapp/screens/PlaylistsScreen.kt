@@ -81,6 +81,7 @@ fun PlaylistsScreen(
     var playlists by remember { mutableStateOf(emptyList<PlaylistUi>()) }
     var lastRefreshMs by remember { mutableStateOf(0L) }
     var creating by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<PlaylistUi?>(null) }
 
     val playlistsRefreshTick by RefreshSignals.playlists.collectAsState()
 
@@ -203,6 +204,7 @@ fun PlaylistsScreen(
                         },
                         onPlay = { playPlaylistFromList(pl, shuffle = false) },
                         onShuffle = { playPlaylistFromList(pl, shuffle = true) },
+                        onDelete = { pendingDelete = pl },
                     )
                     if (index < playlists.lastIndex) {
                         Box(
@@ -216,6 +218,36 @@ fun PlaylistsScreen(
                 }
             }
         }
+    }
+
+    pendingDelete?.let { pl ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Delete playlist?") },
+            text = { Text("\"${pl.name}\" will be deleted for good.") },
+            confirmButton = {
+                HelixTextButton(
+                    onClick = {
+                        pendingDelete = null
+                        scope.launchPlaybackAction(
+                            failureAction = "Delete",
+                            successMessage = "Playlist deleted",
+                            onSuccess = {
+                                playlists = playlists.filterNot { it.id == pl.id }
+                                RefreshSignals.bumpPlaylists()
+                            },
+                        ) {
+                            val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
+                            val resp = withContext(Dispatchers.IO) { api.deletePlaylist(pl.id) }
+                            if (!resp.isSuccessful) throw HelixHttpException(resp.code())
+                        }
+                    },
+                ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                HelixTextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
+            },
+        )
     }
 
     if (creating) {
@@ -252,6 +284,7 @@ private fun PlaylistRow(
     onOpenPlaylist: () -> Unit,
     onPlay: () -> Unit,
     onShuffle: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     val ctx = LocalContext.current
     val cover = HelixImages.absoluteUrl(HelixPrefs.getBaseUrl(ctx), playlist.thumbnailUrl)
@@ -322,6 +355,16 @@ private fun PlaylistRow(
                         onShuffle()
                     },
                 )
+                // System playlists (e.g. Liked songs) can't be deleted.
+                if (playlist.systemKey.isBlank()) {
+                    DropdownMenuItem(
+                        text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                        onClick = {
+                            menuExpanded = false
+                            onDelete()
+                        },
+                    )
+                }
             }
         }
     }

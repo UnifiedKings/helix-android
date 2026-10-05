@@ -240,6 +240,7 @@ private fun HelixApp(openNowPlayingSignal: Int) {
                     PlaylistDetailScreen(
                         playlistId = pid,
                         onNavigateToNowPlaying = { navigateToNowPlaying() },
+                        onClose = { nav.popBackStack() },
                     )
                 }
                 composable("album/{browseId}") { backStackEntry ->

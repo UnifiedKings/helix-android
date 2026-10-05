@@ -287,7 +287,7 @@ fun PlaylistDetailScreen(
             return
         }
         RefreshSignals.bumpPlaylists()
-        snack.showSnackbar("Playlist deleted")
+        UserMessages.show("Playlist deleted")
         onClose()
     }
 
