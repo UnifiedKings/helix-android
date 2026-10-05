@@ -35,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.helixapp.playback.DevicePlayback
+import com.example.helixapp.playback.HelixTransport
 import com.example.helixapp.playback.PlayerCommandCoordinator
 import com.example.helixapp.ui.theme.HelixAccent
 import com.example.helixapp.ui.theme.HelixBorder
@@ -132,6 +133,8 @@ fun PlaybackSettingsScreen(onBack: () -> Unit) {
                     onCheckedChange = { enabled ->
                         playOnDevice = enabled
                         DevicePlayback.setEnabled(ctx, enabled)
+                        // Turning playback on means "listen here now".
+                        if (enabled) HelixTransport.markInitialSynced()
                         // Apply right away: unload local audio, or load and join what's playing.
                         scope.launch {
                             runCatching { PlayerCommandCoordinator.syncFromBackend(ctx, forceLoadStream = true) }

@@ -87,6 +87,8 @@ object PlayerCommandCoordinator {
             val api = HelixClient.create(context, HelixPrefs.getBaseUrl(context))
             val resp = withContext(Dispatchers.IO) { request(api) }
             if (!resp.isSuccessful) throw HelixHttpException(resp.code())
+            // The user changed playback from this phone, so they want to hear it here.
+            HelixTransport.markInitialSynced()
             HelixTransport.refreshAndSync(context, forceLoadStream = forceLoadStream, forceRestart = forceRestart)
         }
     }
@@ -130,8 +132,9 @@ object PlayerCommandCoordinator {
                 // If we fail to tell the backend we resumed (e.g. no network), we might 
                 // encounter playback errors eventually, but we let it try to play locally.
             } else {
-                HelixTransport.refreshAndSync(context, forceLoadStream = true)
+                // Mark first: the sync below must be allowed to play on this phone.
                 HelixTransport.markInitialSynced()
+                HelixTransport.refreshAndSync(context, forceLoadStream = true)
             }
         }
     }

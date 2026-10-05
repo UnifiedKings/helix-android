@@ -18,6 +18,11 @@ object HelixTransport {
     @Volatile
     private var lastSourceLower: String = ""
 
+    /**
+     * True from service start until the user asks to listen on this phone (Play, or starting
+     * anything). Until then the phone follows the backend's current item but stays silent,
+     * so opening the app never interrupts or doubles up audio playing on another device.
+     */
     @Volatile
     var needsInitialSync: Boolean = true
         private set
@@ -127,11 +132,12 @@ object HelixTransport {
         val shouldLoad = forceLoadStream || forceRestart || (lastNowId != qid)
         lastNowId = qid
 
+        val playLocally = isPlaying && !needsInitialSync
         if (shouldLoad) {
             Log.d("HELIX_PLAYER", "Applying current-only Media3 item now=$qid")
-            PlaybackController.setCurrentItem(ctx, currentItem, autoplay = isPlaying)
+            PlaybackController.setCurrentItem(ctx, currentItem, autoplay = playLocally)
         } else {
-            if (isPlaying) PlaybackController.resume(ctx) else PlaybackController.pause(ctx)
+            if (playLocally) PlaybackController.resume(ctx) else PlaybackController.pause(ctx)
         }
 
         if (forceRestart) Log.d("HELIX_PLAYER", "forceRestart=true")

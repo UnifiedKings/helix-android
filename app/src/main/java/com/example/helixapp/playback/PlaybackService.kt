@@ -38,7 +38,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -342,29 +341,12 @@ class PlaybackService : MediaSessionService() {
         registerNoisyAudioReceiver()
         refreshAuthHeaders()
 
-        // A cold service start must begin paused, but the pause handshake must finish
-        // before the MediaSession starts accepting intentional Play commands.
-        //
-        // The previous async startup gate could swallow a legitimate station/playlist Play:
-        // the backend queue would change, but Media3 would reject play() until the user
-        // pressed Play again. Keep this bounded so an unreachable server cannot hang startup.
+        // A cold start opens quietly: the local player starts paused and the backend is left
+        // alone. This used to pause the backend, which paused every other Helix client's
+        // shared state (the web player then showed "Paused" while still playing). Instead,
+        // HelixTransport keeps this phone silent until the user asks to listen here (see
+        // HelixTransport.needsInitialSync).
         player.pause()
-        // As a remote (playback off on this device) the phone must not pause the user's other
-        // Helix devices just because the app was opened.
-        if (DevicePlayback.isEnabled(this)) runBlocking {
-            try {
-                withTimeoutOrNull(STARTUP_PAUSE_TIMEOUT_MS) {
-                    val api = HelixClient.create(
-                        this@PlaybackService,
-                        HelixPrefs.getBaseUrl(this@PlaybackService),
-                        startRealtime = false,
-                    )
-                    withContext(Dispatchers.IO) { api.pause() }
-                }
-            } catch (e: Exception) {
-                Log.w("HELIX_PLAYER", "Initial backend pause failed", e)
-            }
-        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -626,7 +608,6 @@ class PlaybackService : MediaSessionService() {
 
         private const val HANDOFF_MAX_MS = 30_000L
 
-        private const val STARTUP_PAUSE_TIMEOUT_MS = 2_000L
         private const val TASK_REMOVAL_PAUSE_TIMEOUT_MS = 2_000L
     }
 }
