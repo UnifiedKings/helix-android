@@ -22,10 +22,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -40,66 +37,26 @@ import com.example.helixapp.playback.PlayerCommandCoordinator
 import com.example.helixapp.ui.theme.HelixAccent
 import com.example.helixapp.ui.theme.HelixBorder
 import com.example.helixapp.ui.theme.HelixSurfaceRaised
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlin.math.roundToInt
 
 @Composable
-fun PlaybackSettingsScreen(onBack: () -> Unit) {
+fun PlaybackSettingsScreen(
+    onBack: () -> Unit,
+    viewModel: PlaybackSettingsViewModel = helixViewModel { PlaybackSettingsViewModel(it) },
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    var loading by remember { mutableStateOf(true) }
-    var status by remember { mutableStateOf("") }
-    var queuePosition by remember { mutableStateOf("append") }
-    var queueAhead by remember { mutableIntStateOf(3) }
-    var queueAheadMax by remember { mutableIntStateOf(10) }
-    var defaultVolume by remember { mutableFloatStateOf(1f) }
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val loading = state.loading
+    val status = state.status
+    val queuePosition = state.settings.queueAddPosition
+    val queueAhead = state.settings.stationQueueAhead
+    val queueAheadMax = state.settings.stationQueueAheadMax
+    val defaultVolume = state.settings.defaultVolume
     var playOnDevice by remember { mutableStateOf(DevicePlayback.isEnabled(ctx)) }
     var keepPlayingWhenClosed by remember { mutableStateOf(DevicePlayback.keepsPlayingWhenClosed(ctx)) }
-
-    fun updateSetting(key: String, value: Any) {
-        scope.launch {
-            try {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val payload = JSONObject().put(key, value).toString().toRequestBody("application/json; charset=utf-8".toMediaType())
-                val resp = withContext(Dispatchers.IO) { api.updateUserSettings(payload) }
-                if (!resp.isSuccessful) status = "Could not save (HTTP ${resp.code()})" else status = "Saved"
-            } catch (e: Exception) {
-                status = "Could not save: ${e.message ?: e.javaClass.simpleName}"
-            }
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        if (HelixPrefs.getSessionToken(ctx).isNullOrBlank()) {
-            status = "Connect to Helix first"
-            loading = false
-            return@LaunchedEffect
-        }
-        try {
-            val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-            val resp = withContext(Dispatchers.IO) { api.userSettings() }
-            if (!resp.isSuccessful) {
-                status = "Could not load settings (HTTP ${resp.code()})"
-            } else {
-                val root = JSONObject(resp.body().orEmpty())
-                val settings = root.optJSONObject("settings") ?: JSONObject()
-                val limits = root.optJSONObject("limits") ?: JSONObject()
-                queuePosition = settings.optString("queue_add_position", "append")
-                queueAheadMax = limits.optInt("station_queue_ahead_max", 10).coerceAtLeast(1)
-                queueAhead = settings.optInt("station_queue_ahead", 3).coerceIn(1, queueAheadMax)
-                defaultVolume = settings.optDouble("playback_default_volume", 1.0).toFloat().coerceIn(0f, 1f)
-            }
-        } catch (e: Exception) {
-            status = "Could not load settings: ${e.message ?: e.javaClass.simpleName}"
-        } finally {
-            loading = false
-        }
-    }
 
     Column(
         modifier = Modifier
@@ -180,12 +137,10 @@ fun PlaybackSettingsScreen(onBack: () -> Unit) {
             SettingBlock("Add to queue", "Choose where Add to queue places a song.") {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ChoiceButton("End", queuePosition == "append", Modifier.weight(1f)) {
-                        queuePosition = "append"
-                        updateSetting("queue_add_position", "append")
+                        viewModel.setQueueAddPosition("append")
                     }
                     ChoiceButton("Play next", queuePosition == "next", Modifier.weight(1f)) {
-                        queuePosition = "next"
-                        updateSetting("queue_add_position", "next")
+                        viewModel.setQueueAddPosition("next")
                     }
                 }
             }
@@ -197,8 +152,8 @@ fun PlaybackSettingsScreen(onBack: () -> Unit) {
                 }
                 Slider(
                     value = queueAhead.toFloat(),
-                    onValueChange = { queueAhead = it.roundToInt().coerceIn(1, queueAheadMax) },
-                    onValueChangeFinished = { updateSetting("station_queue_ahead", queueAhead) },
+                    onValueChange = { viewModel.setStationQueueAhead(it.roundToInt()) },
+                    onValueChangeFinished = viewModel::saveStationQueueAhead,
                     valueRange = 1f..queueAheadMax.toFloat(),
                     steps = (queueAheadMax - 2).coerceAtLeast(0),
                 )
@@ -213,8 +168,8 @@ fun PlaybackSettingsScreen(onBack: () -> Unit) {
                 }
                 Slider(
                     value = defaultVolume,
-                    onValueChange = { defaultVolume = it },
-                    onValueChangeFinished = { updateSetting("playback_default_volume", defaultVolume.toDouble()) },
+                    onValueChange = viewModel::setDefaultVolume,
+                    onValueChangeFinished = viewModel::saveDefaultVolume,
                     valueRange = 0f..1f,
                 )
             }

@@ -171,3 +171,30 @@ data class AlbumTrack(
     val durationSeconds: Int,
     val videoId: String,
 )
+
+// ---- Account ----------------------------------------------------------------------------
+
+/** /auth/me. */
+data class AccountInfo(val username: String, val role: String) {
+    val isAdmin: Boolean get() = role == "admin"
+}
+
+/** The account-wide playback settings (/api/user/settings). */
+data class PlaybackSettings(
+    /** "append" or "next". */
+    val queueAddPosition: String = "append",
+    val stationQueueAhead: Int = 3,
+    val stationQueueAheadMax: Int = 10,
+    /** 0..1, used by the web player. */
+    val defaultVolume: Float = 1f,
+)
+
+/** A user as the admin endpoints describe them. */
+data class AdminUser(
+    val id: String,
+    val username: String,
+    val role: String,
+    val isActive: Boolean,
+    val subsonicImportOverride: Boolean,
+    val canImportSubsonic: Boolean,
+)

@@ -30,14 +30,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.example.helixapp.data.HelixAccountRepository
 import com.example.helixapp.prefs.AppPrefs
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import okhttp3.Headers
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
 
 @Composable
 fun ConnectionSettingsScreen(onBack: () -> Unit, onDisconnected: () -> Unit = {}) {
@@ -171,8 +166,7 @@ fun ConnectionSettingsScreen(onBack: () -> Unit, onDisconnected: () -> Unit = {}
                     status = "Disconnecting…"
                     scope.launch {
                         try {
-                            val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                            withContext(Dispatchers.IO) { api.logout() }
+                            HelixAccountRepository(ctx).logout()
                         } catch (_: Exception) {
                         } finally {
                             AppPrefs.clearSession(ctx)

@@ -220,6 +220,40 @@ internal fun parseLikedSongs(json: String): List<Pair<String, String>> {
     }
 }
 
+// ---- Account ----------------------------------------------------------------------------
+
+internal fun parseAccountInfo(json: String): AccountInfo {
+    val o = JSONObject(json)
+    return AccountInfo(username = o.optString("username", ""), role = o.optString("role", ""))
+}
+
+internal fun parsePlaybackSettings(json: String): PlaybackSettings {
+    val root = JSONObject(json)
+    val settings = root.optJSONObject("settings") ?: JSONObject()
+    val limits = root.optJSONObject("limits") ?: JSONObject()
+    val max = limits.optInt("station_queue_ahead_max", 10).coerceAtLeast(1)
+    return PlaybackSettings(
+        queueAddPosition = settings.optString("queue_add_position", "append"),
+        stationQueueAhead = settings.optInt("station_queue_ahead", 3).coerceIn(1, max),
+        stationQueueAheadMax = max,
+        defaultVolume = settings.optDouble("playback_default_volume", 1.0).toFloat().coerceIn(0f, 1f),
+    )
+}
+
+internal fun parseAdminUser(o: JSONObject) = AdminUser(
+    id = o.optString("id"),
+    username = o.optString("username"),
+    role = o.optString("role", "user"),
+    isActive = o.optBoolean("is_active", true),
+    subsonicImportOverride = o.optBoolean("subsonic_import_override", false),
+    canImportSubsonic = o.optBoolean("can_import_subsonic", false),
+)
+
+internal fun parseAdminUsers(json: String): List<AdminUser> {
+    val arr = JSONArray(json)
+    return (0 until arr.length()).mapNotNull { i -> arr.optJSONObject(i)?.let(::parseAdminUser) }
+}
+
 // ---- Stations ---------------------------------------------------------------------------
 
 internal fun parseStations(json: String): List<StationUi> {
