@@ -1,6 +1,5 @@
 package com.example.helixapp
 
-import com.example.helixapp.data.LibraryRepository
 import com.example.helixapp.data.SubsonicLookup
 import com.example.helixapp.data.SubsonicRepository
 import com.example.helixapp.data.SubsonicTrackRequest
@@ -39,8 +38,7 @@ class AlbumViewModelTest {
         ),
     )
 
-    private inner class FakeLibrary(var fail: Exception? = null) : LibraryRepository {
-        override suspend fun history(event: String?, offset: Int, limit: Int) = HistoryPage(emptyList(), false)
+    private inner class FakeLibrary(var fail: Exception? = null) : FakeLibraryRepository() {
         override suspend fun album(browseId: String): AlbumView {
             fail?.let { throw it }
             return album

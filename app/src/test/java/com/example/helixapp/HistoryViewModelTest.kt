@@ -1,6 +1,5 @@
 package com.example.helixapp
 
-import com.example.helixapp.data.LibraryRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -26,7 +25,7 @@ class HistoryViewModelTest {
     @After
     fun tearDown() = Dispatchers.resetMain()
 
-    private class FakeRepo : LibraryRepository {
+    private class FakeRepo : FakeLibraryRepository() {
         val calls = mutableListOf<Triple<String?, Int, Int>>()
         var failWith: Exception? = null
         var hasMore = true
@@ -37,8 +36,6 @@ class HistoryViewModelTest {
             val items = (0 until 2).map { item("${event ?: "all"}-${offset + it}") }
             return HistoryPage(items, hasMore)
         }
-
-        override suspend fun album(browseId: String): AlbumView = error("not used")
     }
 
     private var now = 1_000_000L

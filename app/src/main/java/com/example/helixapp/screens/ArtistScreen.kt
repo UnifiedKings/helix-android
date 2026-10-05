@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -19,23 +18,17 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,7 +37,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -54,13 +46,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.helixapp.helix.HelixTrackRequests
 import com.example.helixapp.playback.PlaybackActions
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -69,113 +55,16 @@ fun ArtistScreen(
     onOpenAlbum: (SearchAlbum) -> Unit,
     onOpenArtist: (SearchArtist) -> Unit,
     onNavigateToNowPlaying: () -> Unit = {},
+    viewModel: ArtistViewModel = helixViewModel(key = "artist:$browseId") { ArtistViewModel(it, browseId) },
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val snack = remember { SnackbarHostState() }
-
-    var loading by remember(browseId) { mutableStateOf(true) }
-    var status by remember(browseId) { mutableStateOf("") }
-    var artist by remember(browseId) {
-        mutableStateOf(
-            ArtistDetailUi(
-                browseId = browseId,
-                name = "",
-                thumbnailUrl = "",
-                mbArtistId = "",
-                resolutionStatus = "unresolved",
-            )
-        )
-    }
-    var popularTracks by remember(browseId) { mutableStateOf(emptyList<SearchSong>()) }
-    var albums by remember(browseId) { mutableStateOf(emptyList<SearchAlbum>()) }
-    var similarArtists by remember(browseId) { mutableStateOf(emptyList<SimilarArtistUi>()) }
-    var similarState by remember(browseId) { mutableStateOf("idle") }
-
-    fun refresh() {
-        if (browseId.isBlank()) {
-            status = "Artist is missing a browse id"
-            loading = false
-            return
-        }
-        loading = true
-        status = ""
-        scope.launch {
-            try {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val detailResp = withContext(Dispatchers.IO) { api.artistDetail(browseId) }
-                if (!detailResp.isSuccessful) {
-                    status = "Artist load failed (HTTP ${detailResp.code()})"
-                    return@launch
-                }
-                artist = parseArtistDetail(detailResp.body().orEmpty(), browseId)
-
-                val searchThumb = runCatching {
-                    withContext(Dispatchers.IO) { api.ytmusicSearchArtists(artist.name.ifBlank { browseId }) }
-                }.getOrNull()?.takeIf { it.isSuccessful }?.body().orEmpty().let { body ->
-                    runCatching { parseArtists(body) }.getOrDefault(emptyList()).firstOrNull {
-                        it.browseId == browseId || it.name.equals(artist.name, ignoreCase = true)
-                    }?.thumbnailUrl.orEmpty()
-                }
-                if (searchThumb.isNotBlank()) {
-                    artist = artist.copy(thumbnailUrl = searchThumb)
-                }
-
-                val (popularResp, albumsResp) = withContext(Dispatchers.IO) {
-                    val a = async { api.artistPopular(browseId) }
-                    val b = async { api.artistAlbums(browseId) }
-                    arrayOf(a.await(), b.await())
-                }
-                popularTracks = if (popularResp.isSuccessful) parsePopularTracks(popularResp.body().orEmpty()) else emptyList()
-                albums = if (albumsResp.isSuccessful) parseArtistAlbums(albumsResp.body().orEmpty()) else emptyList()
-                similarArtists = emptyList()
-                similarState = "loading"
-                var similarLoaded = false
-                var lastSimilarStatus = ""
-                for (attempt in 0 until 15) {
-                    val similarResp = withContext(Dispatchers.IO) { api.artistSimilar(browseId) }
-                    if (similarResp.isSuccessful) {
-                        val body = similarResp.body().orEmpty()
-                        lastSimilarStatus = runCatching { JSONObject(body).optString("mb_resolution_status", "") }.getOrDefault("")
-                        val parsed = parseSimilarArtists(body)
-                        if (parsed.isNotEmpty()) {
-                            similarArtists = parsed
-                            similarState = "ready"
-                            similarLoaded = true
-                            break
-                        }
-                        similarState = when (lastSimilarStatus) {
-                            "resolving", "unresolved" -> "loading"
-                            "failed", "ambiguous" -> "empty"
-                            "resolved" -> "empty"
-                            else -> "loading"
-                        }
-                    } else {
-                        similarState = "empty"
-                    }
-                    if (attempt < 14) {
-                        kotlinx.coroutines.delay(1500L)
-                    }
-                }
-                if (!similarLoaded) {
-                    if (similarState == "loading") {
-                        status = "Similar artists are still loading"
-                    }
-                }
-                if (artist.name.isBlank()) {
-                    status = "Artist not found"
-                }
-            } catch (e: Exception) {
-                status = "Artist load error: ${e.javaClass.simpleName}"
-            } finally {
-                loading = false
-            }
-        }
-    }
-
-    LaunchedEffect(browseId) {
-        refresh()
-    }
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val artist = state.artist
+    val popularTracks = state.popular
+    val albums = state.albums
+    val similarArtists = state.similar
+    val similarState = state.similarState
 
     Scaffold(
         topBar = {
@@ -184,7 +73,6 @@ fun ArtistScreen(
                 navigationIcon = {},
             )
         },
-        snackbarHost = { SnackbarHost(snack) }
     ) { padding ->
         LazyColumn(
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = padding.calculateTopPadding() + 12.dp, bottom = 24.dp),
@@ -193,32 +81,9 @@ fun ArtistScreen(
             item {
                 ArtistHeader(
                     artist = artist,
-                    loading = loading,
-                    status = status,
-                    onCreateStation = {
-                        scope.launch {
-                            try {
-                                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                                val payload = JSONObject()
-                                    .put("name", "${artist.name} Radio")
-                                    .put("seed_type", "artist")
-                                    .put("seed_title", "")
-                                    .put("seed_artist", artist.name)
-                                    .put("discovery", 0.35)
-                                    .put("seed_influence", 0.75)
-                                    .toString()
-                                    .toRequestBody("application/json; charset=utf-8".toMediaType())
-                                val resp = withContext(Dispatchers.IO) { api.createStation(payload) }
-                                if (!resp.isSuccessful) {
-                                    snack.showNonBlocking(scope, "Create station failed (HTTP ${resp.code()})")
-                                } else {
-                                    snack.showNonBlocking(scope, "Created station: ${artist.name} Radio")
-                                }
-                            } catch (e: Exception) {
-                                snack.showNonBlocking(scope, "Create station error: ${e.javaClass.simpleName}")
-                            }
-                        }
-                    }
+                    loading = state.loading,
+                    status = state.status,
+                    onCreateStation = viewModel::createStation,
                 )
             }
 
@@ -230,6 +95,7 @@ fun ArtistScreen(
                     ArtistPopularRow(
                         song = song,
                         onNavigateToNowPlaying = onNavigateToNowPlaying,
+                        onAddToSubsonic = viewModel::addToSubsonic,
                     )
                 }
             }
@@ -247,7 +113,7 @@ fun ArtistScreen(
                 }
             }
 
-            if (similarArtists.isNotEmpty() || similarState != "idle") {
+            if (similarArtists.isNotEmpty() || similarState != SimilarState.Idle) {
                 item {
                     Text("Fans also like", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                 }
@@ -273,7 +139,7 @@ fun ArtistScreen(
                         }
                     } else {
                         Text(
-                            if (similarState == "loading") "Finding similar artists…" else "No similar artists available yet",
+                            if (similarState == SimilarState.Loading) "Finding similar artists…" else "No similar artists available yet",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -354,6 +220,7 @@ private fun ArtistHeader(
 private fun ArtistPopularRow(
     song: SearchSong,
     onNavigateToNowPlaying: () -> Unit,
+    onAddToSubsonic: (SearchSong, artUrl: String) -> Unit,
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -436,26 +303,7 @@ private fun ArtistPopularRow(
                 },
                 onAddToSubsonic = {
                     expanded = false
-                    scope.launch {
-                        try {
-                            val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                            val payload = JSONObject().apply {
-                                put("yt_video_id", song.videoId)
-                                put("title", song.title)
-                                put("artist", song.artist)
-                                if (song.album.isNotBlank()) put("album", song.album)
-                                if (thumb.isNotBlank()) put("art_url", thumb)
-                            }
-                            val resp = withContext(Dispatchers.IO) { api.subsonicAddTrack(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())) }
-                            if (!resp.isSuccessful) {
-                                UserMessages.show("Add to Subsonic failed (HTTP ${resp.code()})")
-                                return@launch
-                            }
-                            UserMessages.show("Added to Subsonic: ${song.title}")
-                        } catch (e: Exception) {
-                            UserMessages.show("Add to Subsonic error: ${e.javaClass.simpleName}")
-                        }
-                    }
+                    onAddToSubsonic(song, thumb)
                 },
             )
         }
