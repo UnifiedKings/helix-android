@@ -115,11 +115,24 @@ fun ConnectionSettingsScreen(onBack: () -> Unit) {
                         return@Button
                     }
 
+                    val previousUrl = HelixPrefs.getBaseUrl(ctx).trim().trimEnd('/')
+                    val serverChanged = !previousUrl.equals(b.trimEnd('/'), ignoreCase = true)
+                    if (serverChanged && connected) {
+                        // The saved session cookie was issued by the old server. Never send it to
+                        // the new one (API calls, streams and the realtime socket all would).
+                        AppPrefs.clearSession(ctx)
+                        connected = false
+                    }
+
                     AppPrefs.saveBaseUrl(ctx, b)
                     HelixPrefs.setUsername(ctx, u)
                     if (password.isBlank()) {
                         HelixWebSession.sync(ctx)
-                        status = "Settings saved"
+                        status = if (serverChanged) {
+                            "Server changed. Enter your password to connect."
+                        } else {
+                            "Settings saved"
+                        }
                         return@Button
                     }
 
