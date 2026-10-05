@@ -155,6 +155,10 @@ cd helix-android
 
 Open the project in Android Studio, allow Gradle to sync, then select an Android device or emulator and press **Run**.
 
+### Releasing
+
+The version lives in one place: `appVersion` at the top of `app/build.gradle.kts`. Bump it for each GitHub release (for example `0.2.0` → `0.2.1`); the `versionCode` Android uses for upgrades is derived from it. Settings → App shows the installed version, with a `-debug` suffix on debug builds.
+
 ## Technology
 
 - Kotlin

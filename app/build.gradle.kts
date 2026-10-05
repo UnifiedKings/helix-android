@@ -1,3 +1,10 @@
+// The app version: bump this for each GitHub release. versionCode is derived from it
+// (major * 10000 + minor * 100 + patch), so it always increases with the name.
+val appVersion = "0.2.0"
+val appVersionCode = appVersion.split(".").map(String::toInt).let { (major, minor, patch) ->
+    major * 10_000 + minor * 100 + patch
+}
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -16,13 +23,17 @@ android {
         // Newer Compose artifacts commonly require 23+. Helix is a LAN app; OK to raise.
         minSdk = 23
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersion
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
+        debug {
+            // Settings shows e.g. "0.2.0-debug", so a debug install is easy to tell apart.
+            versionNameSuffix = "-debug"
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
