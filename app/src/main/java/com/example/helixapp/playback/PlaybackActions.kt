@@ -9,7 +9,9 @@ import com.example.helixapp.HelixHttpException
 import com.example.helixapp.HelixPartialException
 import com.example.helixapp.HelixPrefs
 import com.example.helixapp.HelixTimeoutException
+import com.example.helixapp.data.errorDetail
 import com.example.helixapp.showLoadingOverlay
+import java.net.SocketTimeoutException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -184,10 +186,20 @@ object PlaybackActions {
      */
     suspend fun playStation(ctx: Context, stationId: String, stationName: String) {
         val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-        val resp = withContext(Dispatchers.IO) {
-            api.playStation(stationId, JSONObject().put("reset", true).toBody())
+        val resp = try {
+            withContext(Dispatchers.IO) {
+                api.playStation(stationId, JSONObject().put("reset", true).toBody())
+            }
+        } catch (e: SocketTimeoutException) {
+            // The server is probably still building the station: keep waiting for it below
+            // instead of reporting "can't reach the server" just before it starts.
+            Log.w("HELIX_PLAYER", "Station start response timed out; waiting for the station", e)
+            null
         }
-        if (!resp.isSuccessful) throw HelixHttpException(resp.code())
+        if (resp != null && !resp.isSuccessful) {
+            val detail = withContext(Dispatchers.IO) { runCatching { resp.errorBody()?.string() }.getOrNull() }
+            throw HelixHttpException(resp.code(), errorDetail(detail))
+        }
 
         showLoadingOverlay("Building station…\nStations can take up to 30 seconds to load.")
         if (!waitForStationReady(ctx, stationId, stationName)) {

@@ -8,9 +8,17 @@ import okhttp3.Interceptor
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.scalars.ScalarsConverterFactory
+import java.util.concurrent.TimeUnit
 
 object HelixClient {
     private const val COOKIE_NAME = "mr_session"
+
+    /**
+     * Request header (stripped before sending) asking for a longer read timeout, in seconds,
+     * for one slow endpoint; everything else keeps OkHttp's 10 s default so an unreachable
+     * server still fails fast.
+     */
+    const val READ_TIMEOUT_HEADER = "X-Helix-Read-Timeout"
 
     @Volatile
     private var sharedClient: OkHttpClient? = null
@@ -34,6 +42,7 @@ object HelixClient {
 
     private fun buildClient(appContext: Context): OkHttpClient {
         val builder = OkHttpClient.Builder()
+            .addInterceptor(readTimeoutInterceptor())
             .addInterceptor(authCookieInterceptor(appContext))
 
         val debuggable = (appContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
@@ -44,6 +53,19 @@ object HelixClient {
         }
         return builder.build()
     }
+
+    private fun readTimeoutInterceptor() = Interceptor { chain ->
+        val seconds = readTimeoutOverride(chain.request().header(READ_TIMEOUT_HEADER))
+        if (seconds == null) {
+            chain.proceed(chain.request())
+        } else {
+            val request = chain.request().newBuilder().removeHeader(READ_TIMEOUT_HEADER).build()
+            chain.withReadTimeout(seconds, TimeUnit.SECONDS).proceed(request)
+        }
+    }
+
+    /** The requested timeout in seconds, if the header holds a sensible one. */
+    internal fun readTimeoutOverride(value: String?): Int? = value?.trim()?.toIntOrNull()?.takeIf { it in 1..300 }
 
     private fun authCookieInterceptor(context: Context): Interceptor {
         return Interceptor { chain ->

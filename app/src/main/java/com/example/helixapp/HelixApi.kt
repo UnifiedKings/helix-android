@@ -5,6 +5,7 @@ import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.Headers
 import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.Path
@@ -208,6 +209,9 @@ interface HelixApi {
     @POST("api/dislikes/toggle")
     suspend fun dislikesToggle(@Body payload: RequestBody): Response<String>
     // Stations playback
+    // The server builds the station's first track before answering, which can take well
+    // over OkHttp's default 10 s read timeout.
+    @Headers("${HelixClient.READ_TIMEOUT_HEADER}: 60")
     @POST("api/stations/{station_id}/play")
     suspend fun playStation(@Path("station_id") stationId: String, @Body payload: RequestBody): Response<String>
 }
