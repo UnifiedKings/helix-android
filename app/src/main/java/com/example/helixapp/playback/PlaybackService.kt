@@ -365,7 +365,40 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        Log.i("HELIX_PLAYER", "App task removed; stopping Helix playback")
+        // The app's own MediaController must unbind in every case: a bound controller keeps
+        // the service from stopping later.
+        PlaybackController.release()
+
+        val keepPlaying = DevicePlayback.keepsPlayingWhenClosed(this)
+        // Not isPlaybackOngoing(): Media3 keeps the service in the foreground for a while after
+        // a pause, so that would also keep a paused phone running. Ask whether it's playing (or
+        // switching tracks) right now.
+        val playingHere = ::player.isInitialized &&
+            (handoffActive || (player.playWhenReady && player.mediaItemCount > 0))
+        if (keepPlaying && playingHere) {
+            // Playing (or mid track handoff): keep going in the foreground, like other music
+            // apps. The notification and lock screen stay, and realtime sync keeps running.
+            Log.i("HELIX_PLAYER", "App task removed; playback continues in the background")
+            return
+        }
+
+        if (keepPlaying) {
+            // Not playing here (paused, or this phone is a remote): stop quietly. The backend
+            // is left alone so other devices keep playing. Media3 requires the service to stop
+            // when playback isn't ongoing.
+            Log.i("HELIX_PLAYER", "App task removed while not playing; stopping the service")
+            closingFromTaskRemoval = true
+            endHandoff("task removed", refreshNotification = false)
+            if (::player.isInitialized) {
+                player.pause()
+                player.stop()
+                player.clearMediaItems()
+            }
+            stopSelf()
+            return
+        }
+
+        Log.i("HELIX_PLAYER", "App task removed; stopping Helix playback (keep playing is off)")
 
         closingFromTaskRemoval = true
         endHandoff("task removed", refreshNotification = false)
@@ -379,10 +412,6 @@ class PlaybackService : MediaSessionService() {
             player.stop()
             player.clearMediaItems()
         }
-
-        // Release the app-owned controller so its binding cannot keep the service alive
-        // after the task is gone.
-        PlaybackController.release()
 
         scope.launch {
             try {

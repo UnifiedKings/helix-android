@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.asStateFlow
 object DevicePlayback {
     private const val PREFS = "helix_prefs"
     private const val KEY_PLAY_ON_DEVICE = "play_on_device"
+    private const val KEY_KEEP_PLAYING_WHEN_CLOSED = "keep_playing_when_closed"
 
     private val _enabled = MutableStateFlow(true)
 
@@ -32,6 +33,21 @@ object DevicePlayback {
             loaded = true
         }
         return _enabled.value
+    }
+
+    /**
+     * Whether playback continues in the background after the app is swiped away from recent
+     * apps (on by default). When off, closing the app stops playback and pauses the backend.
+     */
+    fun keepsPlayingWhenClosed(ctx: Context): Boolean =
+        ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_KEEP_PLAYING_WHEN_CLOSED, true)
+
+    fun setKeepsPlayingWhenClosed(ctx: Context, keep: Boolean) {
+        ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_KEEP_PLAYING_WHEN_CLOSED, keep)
+            .apply()
     }
 
     fun setEnabled(ctx: Context, enabled: Boolean) {

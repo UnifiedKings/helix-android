@@ -59,6 +59,7 @@ fun PlaybackSettingsScreen(onBack: () -> Unit) {
     var queueAheadMax by remember { mutableIntStateOf(10) }
     var defaultVolume by remember { mutableFloatStateOf(1f) }
     var playOnDevice by remember { mutableStateOf(DevicePlayback.isEnabled(ctx)) }
+    var keepPlayingWhenClosed by remember { mutableStateOf(DevicePlayback.keepsPlayingWhenClosed(ctx)) }
 
     fun updateSetting(key: String, value: Any) {
         scope.launch {
@@ -139,6 +140,29 @@ fun PlaybackSettingsScreen(onBack: () -> Unit) {
                         scope.launch {
                             runCatching { PlayerCommandCoordinator.syncFromBackend(ctx, forceLoadStream = true) }
                         }
+                    },
+                )
+            }
+        }
+
+        SettingBlock(
+            "Keep playing after closing the app",
+            "When on, music keeps playing after you swipe Helix away from recent apps, with controls in the notification and on the lock screen. When off, closing the app stops playback on all your devices.",
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (keepPlayingWhenClosed) "Keeps playing" else "Stops when closed",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Switch(
+                    checked = keepPlayingWhenClosed,
+                    onCheckedChange = { keep ->
+                        keepPlayingWhenClosed = keep
+                        DevicePlayback.setKeepsPlayingWhenClosed(ctx, keep)
                     },
                 )
             }
