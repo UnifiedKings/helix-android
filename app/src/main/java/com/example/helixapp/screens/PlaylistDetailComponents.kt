@@ -41,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.shadow
@@ -463,6 +464,13 @@ internal fun PlaylistDragHandle(
 ) {
     val thresholdPx = with(LocalDensity.current) { 56.dp.toPx() }
     var dragRemainder by remember { mutableStateOf(0f) }
+    // Read the latest values inside the gesture. Keying pointerInput on them restarted the
+    // gesture as soon as a row reached the top or bottom, and the drag's save never ran.
+    val latestCanMoveUp by rememberUpdatedState(canMoveUp)
+    val latestCanMoveDown by rememberUpdatedState(canMoveDown)
+    val latestOnMoveUp by rememberUpdatedState(onMoveUp)
+    val latestOnMoveDown by rememberUpdatedState(onMoveDown)
+    val latestOnDragFinished by rememberUpdatedState(onDragFinished)
 
     fun resetDrag() {
         dragRemainder = 0f
@@ -474,7 +482,7 @@ internal fun PlaylistDragHandle(
             .width(40.dp)
             .height(54.dp)
             .clip(RoundedCornerShape(14.dp))
-            .pointerInput(enabled, canMoveUp, canMoveDown) {
+            .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
                 detectVerticalDragGestures(
                     onDragStart = {
@@ -485,12 +493,12 @@ internal fun PlaylistDragHandle(
                     onVerticalDrag = { change, dragAmount ->
                         change.consume()
                         dragRemainder += dragAmount
-                        while (dragRemainder <= -thresholdPx && canMoveUp) {
-                            onMoveUp()
+                        while (dragRemainder <= -thresholdPx && latestCanMoveUp) {
+                            latestOnMoveUp()
                             dragRemainder += thresholdPx
                         }
-                        while (dragRemainder >= thresholdPx && canMoveDown) {
-                            onMoveDown()
+                        while (dragRemainder >= thresholdPx && latestCanMoveDown) {
+                            latestOnMoveDown()
                             dragRemainder -= thresholdPx
                         }
                         onDragOffsetChanged(
@@ -499,11 +507,11 @@ internal fun PlaylistDragHandle(
                     },
                     onDragEnd = {
                         resetDrag()
-                        onDragFinished()
+                        latestOnDragFinished()
                     },
                     onDragCancel = {
                         resetDrag()
-                        onDragFinished()
+                        latestOnDragFinished()
                     },
                 )
             },
