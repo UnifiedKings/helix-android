@@ -81,6 +81,9 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** How many 2-second checks to make after "Add to Subsonic" before giving up (~2 minutes). */
+private const val SUBSONIC_POLL_ATTEMPTS = 60
+
 @Composable
 fun NowPlayingScreen() {
     val ctx = LocalContext.current
@@ -231,7 +234,9 @@ fun NowPlayingScreen() {
 
     LaunchedEffect(addToSubsonicPending, now?.queueItemId) {
         if (!addToSubsonicPending || now == null) return@LaunchedEffect
-        while (addToSubsonicPending) {
+        // Poll until the import shows up, but give up after a while: a failed server-side
+        // import would otherwise keep this polling every 2 s for as long as the screen is open.
+        repeat(SUBSONIC_POLL_ATTEMPTS) {
             delay(2_000)
             val available = runCatching { resolveCurrentSubsonicAvailability() }.getOrDefault(false)
             if (available) {
@@ -239,9 +244,11 @@ fun NowPlayingScreen() {
                 subsonicAvailabilityKnown = true
                 addToSubsonicPending = false
                 refresh()
-                break
+                return@LaunchedEffect
             }
         }
+        addToSubsonicPending = false
+        UserMessages.show("Still not in Subsonic after 2 minutes. The import may have failed; try adding it again.")
     }
 
     fun addCurrentToSubsonic() {
