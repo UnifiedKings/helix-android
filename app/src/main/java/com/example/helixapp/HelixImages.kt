@@ -2,7 +2,6 @@ package com.example.helixapp
 
 import android.content.Context
 import coil.request.ImageRequest
-import okhttp3.Request
 
 /** Image helpers for Helix. */
 object HelixImages {
@@ -28,32 +27,4 @@ object HelixImages {
         }
         return b.build()
     }
-
-    /**
-     * Fetch artwork bytes using the same authenticated client as the rest of Helix.
-     *
-     * Android's system media notification/quick-settings player does not reliably
-     * send the Helix session cookie when it resolves artworkUri itself, so authenticated
-     * Subsonic cover URLs can show as a blank placeholder there. Embedding a small
-     * artwork byte array in MediaMetadata gives the system UI the image directly.
-     */
-    fun fetchArtworkBytes(context: Context, absoluteUrl: String, maxBytes: Long = 1_000_000L): ByteArray? {
-        val url = absoluteUrl.trim()
-        if (url.isBlank()) return null
-
-        return runCatching {
-            val req = Request.Builder().url(url).get().build()
-            HelixClient.okHttpClient(context).newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return null
-
-                val body = resp.body ?: return null
-                val contentLength = body.contentLength()
-                if (contentLength > maxBytes) return null
-
-                val bytes = body.bytes()
-                if (bytes.size.toLong() <= maxBytes) bytes else null
-            }
-        }.getOrNull()
-    }
-
 }

@@ -7,7 +7,6 @@ object HelixPrefs {
     private const val KEY_BASE_URL = "base_url"
     private const val KEY_SESSION_TOKEN = "mr_session"
     private const val KEY_USERNAME = "username"
-    private const val KEY_LAST_STATION_NAME = "last_station_name"
 
     fun getBaseUrl(context: Context, defaultValue: String = "http://192.168.0.96:10011"): String {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -47,16 +46,5 @@ object HelixPrefs {
     fun clearAuth(context: Context) {
         setSessionToken(context, null)
         setUsername(context, null)
-    }
-
-    fun getLastStationName(context: Context): String? {
-        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        return p.getString(KEY_LAST_STATION_NAME, null)
-    }
-
-    fun setLastStationName(context: Context, stationName: String?) {
-        val e = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-        if (stationName.isNullOrBlank()) e.remove(KEY_LAST_STATION_NAME) else e.putString(KEY_LAST_STATION_NAME, stationName)
-        e.apply()
     }
 }

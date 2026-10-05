@@ -52,13 +52,12 @@ class SyncDecisionTest {
         assertEquals("$baseUrl/api/stream/q2", action.item.url)
         assertEquals("$baseUrl/api/art/q2", action.item.artworkUrl)
         assertTrue(action.autoplay)
-        assertEquals("station", action.sourceLower)
     }
 
     @Test
     fun sameItemOnlyChangesPlayState() {
         assertEquals(
-            SyncAction.SetPlaying(playing = false, sourceLower = "station"),
+            SyncAction.SetPlaying(playing = false),
             decide(state(isPlaying = false), loadedItemId = "q2"),
         )
     }
@@ -82,7 +81,7 @@ class SyncDecisionTest {
 
     @Test
     fun remoteModeNeverPlaysLocally() {
-        assertEquals(SyncAction.Unload("station"), decide(state(), playOnDevice = false))
+        assertEquals(SyncAction.Unload, decide(state(), playOnDevice = false))
     }
 
     @Test
@@ -109,7 +108,7 @@ class SyncDecisionTest {
     @Test
     fun pausedPhoneDoesNotResumeTheSameItem() {
         assertEquals(
-            SyncAction.SetPlaying(playing = false, sourceLower = "station"),
+            SyncAction.SetPlaying(playing = false),
             decide(state(isPlaying = true), loadedItemId = "q2", waitingForLocalPlay = true),
         )
     }

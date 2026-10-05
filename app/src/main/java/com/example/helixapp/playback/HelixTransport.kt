@@ -15,9 +15,6 @@ object HelixTransport {
     @Volatile
     private var lastNowId: String? = null
 
-    @Volatile
-    private var lastSourceLower: String = ""
-
     /**
      * While true the phone follows the backend's current item but stays silent, until the user
      * asks to listen here (Play, or starting anything). Set when the service starts, so opening
@@ -41,12 +38,7 @@ object HelixTransport {
 
     fun resetSyncState() {
         lastNowId = null
-        lastSourceLower = ""
         waitingForLocalPlay = true
-    }
-
-    fun isStationPlayback(): Boolean {
-        return lastSourceLower.contains("station")
     }
 
     private fun streamUrl(baseUrl: String, queueItemId: String): String {
@@ -79,24 +71,20 @@ object HelixTransport {
             is SyncAction.Clear -> {
                 Log.w("HELIX_PLAYER", "${action.reason}; clearing local Media3 state")
                 lastNowId = null
-                lastSourceLower = ""
                 PlaybackController.clear(ctx)
             }
             is SyncAction.Unload -> {
                 // Remote mode: screens show the shared state (already published above), but this
                 // phone plays nothing. Forget the loaded item so turning playback back on reloads it.
                 lastNowId = null
-                lastSourceLower = action.sourceLower
                 PlaybackController.clearIfLoaded(ctx)
             }
             is SyncAction.Load -> {
                 Log.d("HELIX_PLAYER", "Applying current-only Media3 item now=${action.item.queueItemId}")
                 lastNowId = action.item.queueItemId
-                lastSourceLower = action.sourceLower
                 PlaybackController.setCurrentItem(ctx, action.item, autoplay = action.autoplay)
             }
             is SyncAction.SetPlaying -> {
-                lastSourceLower = action.sourceLower
                 if (action.playing) PlaybackController.resume(ctx) else PlaybackController.pause(ctx)
             }
         }
@@ -110,13 +98,13 @@ object HelixTransport {
         data class Clear(val reason: String) : SyncAction()
 
         /** This phone is a remote ("Play on this device" off): play nothing locally. */
-        data class Unload(val sourceLower: String) : SyncAction()
+        data object Unload : SyncAction()
 
         /** Load the backend's current item, starting it only if [autoplay]. */
-        data class Load(val item: QueueMediaItem, val autoplay: Boolean, val sourceLower: String) : SyncAction()
+        data class Load(val item: QueueMediaItem, val autoplay: Boolean) : SyncAction()
 
         /** The current item is already loaded; just play or pause it. */
-        data class SetPlaying(val playing: Boolean, val sourceLower: String) : SyncAction()
+        data class SetPlaying(val playing: Boolean) : SyncAction()
     }
 
     /**
@@ -149,12 +137,11 @@ object HelixTransport {
             return SyncAction.Clear("Rejecting orphan now_playing=$qid not present in backend queue")
         }
 
-        val sourceLower = now.optString("source", "").lowercase()
-        if (!playOnDevice) return SyncAction.Unload(sourceLower)
+        if (!playOnDevice) return SyncAction.Unload
 
         val playLocally = state.optBoolean("is_playing", true) && !waitingForLocalPlay
         if (!forceLoad && loadedItemId == qid) {
-            return SyncAction.SetPlaying(playLocally, sourceLower)
+            return SyncAction.SetPlaying(playLocally)
         }
 
         val item = QueueMediaItem(
@@ -163,11 +150,10 @@ object HelixTransport {
             title = now.optString("title", ""),
             artist = now.optString("artist", ""),
             album = now.optString("album", ""),
-            // Media3's bitmap loader fetches the artwork asynchronously (with the session cookie),
-            // so play/pause is never blocked on an image download.
+            // Media3's bitmap loader fetches the artwork (with the session cookie) asynchronously.
             artworkUrl = HelixImages.absoluteUrl(baseUrl, now.optString("art_url", "")),
         )
-        return SyncAction.Load(item, autoplay = playLocally, sourceLower = sourceLower)
+        return SyncAction.Load(item, autoplay = playLocally)
     }
 
     fun parseQueueFromState(stateJson: String): Pair<NowPlayingUi?, List<QueueItemUi>> =

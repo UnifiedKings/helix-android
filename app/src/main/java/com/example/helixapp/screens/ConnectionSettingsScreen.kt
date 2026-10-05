@@ -127,7 +127,6 @@ fun ConnectionSettingsScreen(onBack: () -> Unit) {
                     AppPrefs.saveBaseUrl(ctx, b)
                     HelixPrefs.setUsername(ctx, u)
                     if (password.isBlank()) {
-                        HelixWebSession.sync(ctx)
                         status = if (serverChanged) {
                             "Server changed. Enter your password to connect."
                         } else {

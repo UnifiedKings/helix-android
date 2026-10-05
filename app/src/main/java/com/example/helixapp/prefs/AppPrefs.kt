@@ -3,7 +3,6 @@ package com.example.helixapp.prefs
 import android.content.Context
 import android.content.Intent
 import com.example.helixapp.HelixPrefs
-import com.example.helixapp.HelixWebSession
 import com.example.helixapp.playback.PlaybackService
 import com.example.helixapp.playback.PlayerStateStore
 
@@ -13,11 +12,8 @@ object AppPrefs {
         HelixPrefs.setBaseUrl(ctx, url)
     }
 
-    fun getBaseUrl(ctx: Context): String? = HelixPrefs.getBaseUrl(ctx)
-
     fun saveSessionCookie(ctx: Context, cookie: String) {
         HelixPrefs.setSessionToken(ctx, cookie)
-        HelixWebSession.sync(ctx)
 
         // If playback is already running, refresh stream headers immediately.
         runCatching {
@@ -27,10 +23,7 @@ object AppPrefs {
         }
     }
 
-    fun getSessionCookie(ctx: Context): String? = HelixPrefs.getSessionToken(ctx)
-
     fun clearSession(ctx: Context) {
-        HelixWebSession.clear(ctx)
         HelixPrefs.clearAuth(ctx)
         PlayerStateStore.clear()
 
