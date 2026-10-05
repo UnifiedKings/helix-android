@@ -56,6 +56,10 @@ class ArtistViewModelTest {
         val created = mutableListOf<String>()
         override suspend fun list(): List<StationUi> = emptyList()
         override suspend fun createArtistStation(artist: String): String { created += artist; return "s1" }
+        override suspend fun providers() = emptyList<StationProviderUi>()
+        override suspend fun create(payload: JSONObject) = Unit
+        override suspend fun update(stationId: String, payload: JSONObject) = Unit
+        override suspend fun delete(stationId: String) = Unit
     }
 
     private class FakeSubsonic : SubsonicRepository {
