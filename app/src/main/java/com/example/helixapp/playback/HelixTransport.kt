@@ -96,6 +96,14 @@ object HelixTransport {
         val isPlaying = state.optBoolean("is_playing", true)
         lastSourceLower = now.optString("source", "").lowercase()
 
+        if (!DevicePlayback.isEnabled(ctx)) {
+            // Remote mode: screens show the shared state (already published above), but this
+            // phone plays nothing. Forget the loaded item so turning playback back on reloads it.
+            lastNowId = null
+            PlaybackController.clearIfLoaded(ctx)
+            return
+        }
+
         val title = now.optString("title", "")
         val artist = now.optString("artist", "")
         val album = now.optString("album", "")

@@ -207,6 +207,17 @@ object PlaybackController {
         }
     }
 
+    /** Stop and unload local playback, if anything is loaded. Quiet no-op otherwise. */
+    fun clearIfLoaded(ctx: Context) {
+        get(ctx) { c ->
+            if (c.mediaItemCount == 0) return@get
+            Log.d("HELIX_PLAYER", "clearIfLoaded(): this device is not playing audio; unloading")
+            c.pause()
+            c.stop()
+            c.clearMediaItems()
+        }
+    }
+
     @Synchronized
     fun release() {
         val existingFuture = controllerFuture ?: return

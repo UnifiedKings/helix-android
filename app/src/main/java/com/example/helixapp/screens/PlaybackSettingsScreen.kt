@@ -19,6 +19,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -33,6 +34,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.example.helixapp.playback.DevicePlayback
+import com.example.helixapp.playback.PlayerCommandCoordinator
 import com.example.helixapp.ui.theme.HelixAccent
 import com.example.helixapp.ui.theme.HelixBorder
 import com.example.helixapp.ui.theme.HelixSurfaceRaised
@@ -54,6 +57,7 @@ fun PlaybackSettingsScreen(onBack: () -> Unit) {
     var queueAhead by remember { mutableIntStateOf(3) }
     var queueAheadMax by remember { mutableIntStateOf(10) }
     var defaultVolume by remember { mutableFloatStateOf(1f) }
+    var playOnDevice by remember { mutableStateOf(DevicePlayback.isEnabled(ctx)) }
 
     fun updateSetting(key: String, value: Any) {
         scope.launch {
@@ -109,6 +113,39 @@ fun PlaybackSettingsScreen(onBack: () -> Unit) {
                 Text("Synced with your Helix account", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+
+        SettingBlock(
+            "Play on this device",
+            "When off, this phone works as a remote: it shows and controls what's playing, but your other Helix devices play the audio. Lock screen controls need playback on.",
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (playOnDevice) "Playing audio on this phone" else "Remote control only",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Switch(
+                    checked = playOnDevice,
+                    onCheckedChange = { enabled ->
+                        playOnDevice = enabled
+                        DevicePlayback.setEnabled(ctx, enabled)
+                        // Apply right away: unload local audio, or load and join what's playing.
+                        scope.launch {
+                            runCatching { PlayerCommandCoordinator.syncFromBackend(ctx, forceLoadStream = true) }
+                        }
+                    },
+                )
+            }
+        }
+
+        Text(
+            "Account settings",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
 
         if (loading) {
             CircularProgressIndicator()

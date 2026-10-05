@@ -102,7 +102,7 @@ object PlayerCommandCoordinator {
     suspend fun pause(context: Context) {
         mutex.withLock {
             // Optimistically pause the local player immediately so headset buttons feel responsive
-            PlaybackController.pause(context)
+            if (DevicePlayback.isEnabled(context)) PlaybackController.pause(context)
 
             val api = HelixClient.create(context, HelixPrefs.getBaseUrl(context))
             val resp = runCatching { withContext(Dispatchers.IO) { api.pause() } }.getOrNull()
@@ -121,7 +121,7 @@ object PlayerCommandCoordinator {
     suspend fun resume(context: Context) {
         mutex.withLock {
             // Optimistically resume the local player immediately
-            PlaybackController.resume(context)
+            if (DevicePlayback.isEnabled(context)) PlaybackController.resume(context)
 
             val api = HelixClient.create(context, HelixPrefs.getBaseUrl(context))
             val resp = runCatching { withContext(Dispatchers.IO) { api.resume() } }.getOrNull()

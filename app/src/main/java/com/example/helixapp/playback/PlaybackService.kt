@@ -349,7 +349,9 @@ class PlaybackService : MediaSessionService() {
         // the backend queue would change, but Media3 would reject play() until the user
         // pressed Play again. Keep this bounded so an unreachable server cannot hang startup.
         player.pause()
-        runBlocking {
+        // As a remote (playback off on this device) the phone must not pause the user's other
+        // Helix devices just because the app was opened.
+        if (DevicePlayback.isEnabled(this)) runBlocking {
             try {
                 withTimeoutOrNull(STARTUP_PAUSE_TIMEOUT_MS) {
                     val api = HelixClient.create(

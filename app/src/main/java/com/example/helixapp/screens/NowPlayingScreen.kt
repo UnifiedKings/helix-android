@@ -70,6 +70,7 @@ import com.example.helixapp.playback.NowPlayingUi
 import com.example.helixapp.playback.PlaybackController
 import com.example.helixapp.playback.PlayerCommandCoordinator
 import com.example.helixapp.playback.PlayerStateStore
+import com.example.helixapp.playback.DevicePlayback
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -88,6 +89,9 @@ fun NowPlayingScreen() {
     var status by remember { mutableStateOf("Idle") }
     var loading by remember { mutableStateOf(false) }
     val playerState by PlayerStateStore.state.collectAsState()
+    // False when the phone is only a remote: the play state then comes from the backend,
+    // since the local player stays empty.
+    val playOnDevice by remember { DevicePlayback.isEnabled(ctx); DevicePlayback.enabled }.collectAsState()
     var now by remember { mutableStateOf(PlayerStateStore.state.value?.now) }
     var activeStationName by remember { mutableStateOf(PlayerStateStore.state.value?.activeStationName) }
 
@@ -160,8 +164,8 @@ fun NowPlayingScreen() {
         currentYtVideoId = ps.now?.ytVideoId?.takeIf { it.isNotBlank() }
         currentSubsonicSongId = ps.now?.subsonicSongId?.takeIf { it.isNotBlank() }
         // Media3's listener is the source of truth for isPlaying once connected; the backend
-        // value only seeds it.
-        if (controller == null) isPlaying = ps.isPlaying
+        // value only seeds it (or drives it entirely when this phone plays no audio).
+        if (controller == null || !playOnDevice) isPlaying = ps.isPlaying
         if (!loading) status = if (ps.now == null) "Nothing playing" else "Done"
     }
 
@@ -395,7 +399,7 @@ fun NowPlayingScreen() {
 
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlayingNow: Boolean) {
-                isPlaying = isPlayingNow
+                if (playOnDevice) isPlaying = isPlayingNow
                 if (playPauseInFlight) playPauseInFlight = false
             }
 
@@ -504,7 +508,7 @@ fun NowPlayingScreen() {
                 //
                 // Decide from the actual MediaController state at tap time, not the Compose
                 // mirror, because the UI state can lag a Media3 transition by a frame.
-                val actuallyPlaying = controller?.isPlaying ?: isPlaying
+                val actuallyPlaying = if (playOnDevice) controller?.isPlaying ?: isPlaying else isPlaying
 
                 if (actuallyPlaying) {
                     // Pause locally immediately for responsive UI/audio, then let the coordinator
@@ -517,9 +521,7 @@ fun NowPlayingScreen() {
                 }
 
                 // Re-seed the visible state from the real controller after the serialized command.
-                controller?.let { c ->
-                    isPlaying = c.isPlaying
-                }
+                if (playOnDevice) controller?.let { c -> isPlaying = c.isPlaying }
             } catch (_: Exception) {
                 // A failed command can leave our optimistic pause state wrong. Re-read backend /
                 // Media3 truth instead of requiring the user to recover via the system controls.
@@ -777,6 +779,17 @@ fun NowPlayingScreen() {
                     }
                 }
 
+                if (!playOnDevice && now != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "Remote control: audio plays on your other Helix devices",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = HelixMuted,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+
                 if (now != null && subsonicAvailabilityKnown) {
                     Spacer(Modifier.height(10.dp))
                     Row(
@@ -934,6 +947,12 @@ fun NowPlayingScreen() {
                 ) {
                     IconButton(
                         onClick = {
+                            if (!playOnDevice) {
+                                scope.launchPlaybackAction(failureAction = "Previous") {
+                                    PlayerCommandCoordinator.previous(ctx)
+                                }
+                                return@IconButton
+                            }
                             PlaybackController.get(ctx) { c ->
                                 if (!mediaMatchesBackend) {
                                     scope.launch {
