@@ -29,7 +29,22 @@ object RecentSearchPlay {
         val source: String = "ytmusic",
         val subsonicSongId: String = "",
         val ts: Long,
-    )
+    ) {
+        private val fromSubsonic: Boolean get() = source.equals("subsonic", ignoreCase = true)
+
+        /** A recent song as a search result; Subsonic songs keep their id as the Subsonic id. */
+        fun toSearchSong() = SearchSong(
+            title = title,
+            artist = artist,
+            album = album,
+            thumbnailUrl = thumbnailUrl,
+            videoId = if (fromSubsonic) "" else id,
+            source = source,
+            subsonicSongId = if (fromSubsonic) id else subsonicSongId,
+        )
+
+        fun toSearchAlbum() = SearchAlbum(title, artist, year, thumbnailUrl, id)
+    }
 
     fun get(ctx: Context): List<Item> {
         val raw = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, null) ?: return emptyList()

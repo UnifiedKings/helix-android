@@ -9,6 +9,8 @@ import com.example.helixapp.SearchArtist
 import com.example.helixapp.SearchSong
 import com.example.helixapp.SimilarArtistUi
 import com.example.helixapp.parseAlbumView
+import com.example.helixapp.parseAlbums
+import com.example.helixapp.parseSongs
 import com.example.helixapp.parseArtistAlbums
 import com.example.helixapp.parseArtistDetail
 import com.example.helixapp.parseArtists
@@ -24,6 +26,9 @@ interface LibraryRepository {
 
     suspend fun album(browseId: String): AlbumView
 
+    /** Song and album results for [query]. */
+    suspend fun search(query: String): SearchResults
+
     suspend fun searchArtists(query: String, limit: Int = 15): List<SearchArtist>
 
     suspend fun artist(browseId: String): ArtistDetailUi
@@ -36,6 +41,8 @@ interface LibraryRepository {
     suspend fun similarArtists(browseId: String): SimilarArtists
 }
 
+data class SearchResults(val songs: List<SearchSong>, val albums: List<SearchAlbum>)
+
 data class SimilarArtists(val artists: List<SimilarArtistUi>, val resolutionStatus: String)
 
 class HelixLibraryRepository(context: Context) : LibraryRepository {
@@ -45,6 +52,11 @@ class HelixLibraryRepository(context: Context) : LibraryRepository {
         parseHistoryPage(helixCall(ctx) { it.history(event = event, limit = limit, offset = offset) })
 
     override suspend fun album(browseId: String): AlbumView = parseAlbumView(helixCall(ctx) { it.albumView(browseId) })
+
+    override suspend fun search(query: String): SearchResults {
+        val body = helixCall(ctx) { it.ytmusicSearch(query) }
+        return SearchResults(parseSongs(body), parseAlbums(body))
+    }
 
     override suspend fun searchArtists(query: String, limit: Int): List<SearchArtist> =
         parseArtists(helixCall(ctx) { it.ytmusicSearchArtists(query, artistLimit = limit) })
