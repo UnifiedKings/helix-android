@@ -71,14 +71,6 @@ import com.example.helixapp.ui.theme.HelixBackground
 import com.example.helixapp.ui.theme.HelixBorder
 import com.example.helixapp.ui.theme.HelixMuted
 
-private data class AlbumTrack(
-    val pos: Int,
-    val title: String,
-    val artist: String,
-    val durationSeconds: Int,
-    val videoId: String,
-)
-
 @Composable
 fun AlbumScreen(
     browseId: String,
@@ -158,44 +150,13 @@ fun AlbumScreen(
                     err = "Failed (HTTP ${resp.code()})"
                     return@launch
                 }
-                val body = resp.body().orEmpty()
-                val root = JSONObject(body)
-
-                title = root.optString("title", "")
-                artist = listOf(
-                    root.optString("artist", ""),
-                    root.optString("artist_name", ""),
-                    root.optString("artists", ""),
-                    root.optString("album_artist", ""),
-                    root.optString("albumArtist", ""),
-                ).map { it.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
-                year = root.optString("year", "")
-                thumbUrl = root.optString("thumbnail_url", "")
-
-                val t = root.optJSONArray("tracks") ?: JSONArray()
-                val out = ArrayList<AlbumTrack>(t.length())
-                for (i in 0 until t.length()) {
-                    val o = t.optJSONObject(i) ?: continue
-                    val pos = o.optInt("pos", i + 1)
-                    val tt = o.optString("title", "")
-                    if (tt.isBlank()) continue
-                    val ta = listOf(
-                        o.optString("artist", ""),
-                        o.optString("artist_name", ""),
-                        o.optString("artists", ""),
-                        o.optString("album_artist", ""),
-                        o.optString("albumArtist", ""),
-                        artist,
-                    ).map { it.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
-                    val dur = o.optInt("duration_seconds", 0)
-                    val vid = listOf(
-                        o.optString("video_id", ""),
-                        o.optString("videoId", "")
-                    ).map { it.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
-                    out.add(AlbumTrack(pos = pos, title = tt, artist = ta, durationSeconds = dur, videoId = vid))
-                }
-                tracks = out
-                resolveSubsonicAvailability(out, title, artist)
+                val album = parseAlbumView(resp.body().orEmpty())
+                title = album.title
+                artist = album.artist
+                year = album.year
+                thumbUrl = album.thumbnailUrl
+                tracks = album.tracks
+                resolveSubsonicAvailability(album.tracks, title, artist)
             } catch (e: Exception) {
                 err = "Error: ${e.javaClass.simpleName}: ${e.message}"
             } finally {

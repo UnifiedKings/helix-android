@@ -88,21 +88,6 @@ import org.json.JSONObject
 
 private const val LIKED_SYSTEM_KEY = "liked"
 
-data class PlaylistTrackUi(
-    val id: String,
-    val title: String,
-    val artist: String,
-    val album: String,
-    val artUrl: String,
-    val durationMs: Long,
-    val source: String,
-    val subsonicSongId: String,
-    val ytVideoId: String,
-    val ytBrowseId: String,
-    val mbRecordingId: String,
-    val mbArtistId: String,
-)
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlaylistDetailScreen(
@@ -811,53 +796,6 @@ private fun PlaylistAddSongsPicker(
         }
     }
 
-    fun parseSongArray(
-        arr: JSONArray,
-        fallbackAlbum: String = "",
-        fallbackArtist: String = "",
-        fallbackArt: String = "",
-    ): List<SearchSong> {
-        val out = ArrayList<SearchSong>(arr.length())
-        for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
-            val title = o.optString("title", o.optString("name", "")).trim()
-            if (title.isBlank()) continue
-            val artist = listOf(
-                o.optString("artist", ""),
-                o.optString("artist_name", ""),
-                o.optString("artists", ""),
-                fallbackArtist,
-            ).map { it.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
-            val album = o.optString("album", fallbackAlbum)
-            val videoId = listOf(
-                o.optString("video_id", ""),
-                o.optString("videoId", ""),
-            ).map { it.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
-            val source = o.optString("source", "ytmusic")
-            val subId = o.optString(
-                "subsonic_song_id",
-                o.optString("subsonicSongId", ""),
-            )
-            val thumb = listOf(
-                o.optString("thumbnail_url", ""),
-                o.optString("thumbnail", ""),
-                o.optString("thumb", ""),
-                fallbackArt,
-            ).map { it.trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
-
-            out += SearchSong(
-                title = title,
-                artist = artist,
-                album = album,
-                thumbnailUrl = thumb,
-                videoId = videoId,
-                source = source,
-                subsonicSongId = subId,
-            )
-        }
-        return out
-    }
-
     suspend fun runSearch(term: String) {
         if (term.isBlank()) {
             songs = emptyList()
@@ -882,54 +820,16 @@ private fun PlaylistAddSongsPicker(
                 return
             }
 
-            val searchRoot = JSONObject(searchResp.body().orEmpty())
-            songs = parseSongArray(searchRoot.optJSONArray("songs") ?: JSONArray())
-
-            val albumArr = searchRoot.optJSONArray("albums") ?: JSONArray()
-            albums = buildList {
-                for (i in 0 until albumArr.length()) {
-                    val o = albumArr.optJSONObject(i) ?: continue
-                    val title = o.optString("title", o.optString("name", "")).trim()
-                    val browseId = o.optString("browse_id", o.optString("browseId", "")).trim()
-                    if (title.isBlank() || browseId.isBlank()) continue
-                    add(
-                        PlaylistPickerAlbum(
-                            title = title,
-                            artist = o.optString("artist", o.optString("artists", "")),
-                            browseId = browseId,
-                            thumbnailUrl = o.optString(
-                                "thumbnail_url",
-                                o.optString("thumbnail", o.optString("thumb", "")),
-                            ),
-                        )
-                    )
-                }
-            }
+            val searchBody = searchResp.body().orEmpty()
+            songs = parseSongs(searchBody)
+            albums = parseAlbums(searchBody)
+                .filter { it.browseId.isNotBlank() }
+                .map { PlaylistPickerAlbum(it.title, it.artist, it.browseId, it.thumbnailUrl) }
 
             if (artistResp.isSuccessful) {
-                val artistRoot = JSONObject(artistResp.body().orEmpty())
-                val artistArr = artistRoot.optJSONArray("artists") ?: JSONArray()
-                artists = buildList {
-                    for (i in 0 until artistArr.length()) {
-                        val o = artistArr.optJSONObject(i) ?: continue
-                        val name = o.optString("name", o.optString("artist", "")).trim()
-                        val browseId = o.optString(
-                            "browse_id",
-                            o.optString("browseId", o.optString("artist_id", "")),
-                        ).trim()
-                        if (name.isBlank() || browseId.isBlank()) continue
-                        add(
-                            PlaylistPickerArtist(
-                                name = name,
-                                browseId = browseId,
-                                thumbnailUrl = o.optString(
-                                    "thumbnail_url",
-                                    o.optString("thumbnail", o.optString("thumb", "")),
-                                ),
-                            )
-                        )
-                    }
-                }
+                artists = parseArtists(artistResp.body().orEmpty())
+                    .filter { it.browseId.isNotBlank() }
+                    .map { PlaylistPickerArtist(it.name, it.browseId, it.thumbnailUrl) }
             }
 
             if (songs.isEmpty() && albums.isEmpty() && artists.isEmpty()) {
@@ -2114,50 +2014,6 @@ private fun BulkSheetRow(
             },
         )
     }
-}
-
-private data class PlaylistDetailParsed(
-    val name: String,
-    val thumbnailUrl: String,
-    val systemKey: String,
-    val tracks: List<PlaylistTrackUi>,
-)
-
-private fun parsePlaylistDetail(json: String): PlaylistDetailParsed {
-    val root = JSONObject(json)
-    val pl = root.optJSONObject("playlist") ?: JSONObject()
-    val name = pl.optString("name", "Playlist")
-    val thumb = pl.optString("thumbnail_url", "")
-    val systemKey = pl.optString("system_key", "")
-    val arr = root.optJSONArray("tracks") ?: JSONArray()
-    val tracks = ArrayList<PlaylistTrackUi>(arr.length())
-
-    for (i in 0 until arr.length()) {
-        val o = arr.optJSONObject(i) ?: continue
-        tracks.add(
-            PlaylistTrackUi(
-                id = o.optString("id", ""),
-                title = o.optString("title", ""),
-                artist = o.optString("artist", ""),
-                album = o.optString("album", ""),
-                artUrl = o.optString("art_url", ""),
-                durationMs = o.optLong("duration_ms", 0L),
-                source = o.optString("source", ""),
-                subsonicSongId = o.optString("subsonic_song_id", ""),
-                ytVideoId = o.optString("yt_video_id", ""),
-                ytBrowseId = o.optString("yt_browse_id", ""),
-                mbRecordingId = o.optString("mb_recording_id", ""),
-                mbArtistId = o.optString("mb_artist_id", ""),
-            )
-        )
-    }
-
-    return PlaylistDetailParsed(
-        name = name,
-        thumbnailUrl = thumb,
-        systemKey = systemKey,
-        tracks = tracks,
-    )
 }
 
 private fun formatDurationMs(durationMs: Long): String {

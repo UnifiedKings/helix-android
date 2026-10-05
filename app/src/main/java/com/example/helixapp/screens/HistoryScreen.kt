@@ -57,33 +57,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
 import org.json.JSONObject
 
 private const val HISTORY_PAGE_SIZE = 50
-
-data class HistoryItemUi(
-    val id: String,
-    val title: String,
-    val artist: String,
-    val album: String,
-    /** "completed" or "skipped". */
-    val event: String,
-    /** When it was played, in epoch millis; 0 if the server's timestamp couldn't be read. */
-    val playedAtMs: Long,
-    val artUrl: String,
-    val durationMs: Long,
-    val source: String,
-    val ytVideoId: String,
-    val ytBrowseId: String,
-    val subsonicSongId: String,
-    val mbRecordingId: String,
-    val mbArtistId: String,
-) {
-    val skipped: Boolean get() = event.equals("skipped", ignoreCase = true)
-}
-
-data class HistoryPage(val items: List<HistoryItemUi>, val hasMore: Boolean)
 
 private enum class HistoryFilter(val label: String, val event: String?) {
     All("All", null),
@@ -331,49 +307,6 @@ private fun HistoryItemUi.toTrackRequest(): JSONObject =
         mbRecordingId = mbRecordingId,
         mbArtistId = mbArtistId,
     )
-
-internal fun parseHistoryPage(json: String): HistoryPage {
-    val root = JSONObject(json)
-    val arr = root.optJSONArray("items") ?: JSONArray()
-    val items = (0 until arr.length()).mapNotNull { i ->
-        val o = arr.optJSONObject(i) ?: return@mapNotNull null
-        HistoryItemUi(
-            id = o.optString("id", ""),
-            title = o.optString("title", ""),
-            artist = o.optString("artist", ""),
-            album = o.optString("album", ""),
-            event = o.optString("event", ""),
-            playedAtMs = parseServerTimestamp(o.optString("created_at", "")),
-            artUrl = o.optString("art_url", ""),
-            durationMs = o.optLong("duration_ms", 0L),
-            source = o.optString("source", ""),
-            ytVideoId = o.optString("yt_video_id", ""),
-            ytBrowseId = o.optString("yt_browse_id", ""),
-            subsonicSongId = o.optString("subsonic_song_id", ""),
-            mbRecordingId = o.optString("mb_recording_id", ""),
-            mbArtistId = o.optString("mb_artist_id", ""),
-        )
-    }
-    return HistoryPage(items, hasMore = root.optBoolean("has_more", false))
-}
-
-/**
- * Parse the server's ISO-8601 UTC timestamps ("2026-10-05T06:28:54.382477Z", with or without
- * fractional seconds or a "Z"/"+00:00" suffix) to epoch millis; 0 if unreadable. Uses
- * SimpleDateFormat because java.time needs API 26 and the app supports 23.
- */
-internal fun parseServerTimestamp(value: String): Long {
-    val base = value.trim().take(19)
-    if (base.length < 19) return 0L
-    val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply {
-        timeZone = TimeZone.getTimeZone("UTC")
-        isLenient = false
-    }
-    val seconds = runCatching { format.parse(base)?.time }.getOrNull() ?: return 0L
-    val fraction = Regex("""^\.(\d{1,3})""").find(value.trim().drop(19))?.groupValues?.get(1)
-    val millis = fraction?.padEnd(3, '0')?.toLongOrNull() ?: 0L
-    return seconds + millis
-}
 
 /**
  * Group items (newest first, as the server returns them) into day sections labelled

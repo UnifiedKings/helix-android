@@ -1,5 +1,7 @@
 package com.example.helixapp.playback
 
+import com.example.helixapp.parsePlaylists
+import com.example.helixapp.parseStations
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -22,7 +24,7 @@ class HelixLibraryBrowserTest {
     fun stationsBecomePlayableItems() {
         val items = HelixLibraryBrowser.stationItems(
             null,
-            """[{"id": "s1", "name": "Jessie Murph Radio"}, {"id": "", "name": "broken"}, {"id": "s2"}]""",
+            parseStations("""[{"id": "s1", "name": "Jessie Murph Radio"}, {"id": "", "name": "broken"}, {"id": "s2"}]"""),
         )
         assertEquals(listOf("station:s1", "station:s2"), items.map { it.mediaId })
         assertEquals("Jessie Murph Radio", items[0].mediaMetadata.title)
@@ -34,8 +36,8 @@ class HelixLibraryBrowserTest {
     @Test
     fun systemPlaylistsArePlayedByKey() {
         val items = HelixLibraryBrowser.playlistItems(
-            """[{"id": "p1", "name": "Liked songs", "system_key": "liked", "track_count": 1},
-                {"id": "p2", "name": "Gym", "track_count": 12}]""",
+            parsePlaylists("""[{"id": "p1", "name": "Liked songs", "system_key": "liked", "track_count": 1},
+                {"id": "p2", "name": "Gym", "track_count": 12}]"""),
         )
         assertEquals(listOf("playlist:liked", "playlist:p2"), items.map { it.mediaId })
         assertEquals("1 song", items[0].mediaMetadata.artist)
@@ -58,8 +60,8 @@ class HelixLibraryBrowserTest {
 
     @Test
     fun emptyListsAreFine() {
-        assertTrue(HelixLibraryBrowser.stationItems(null, "[]").isEmpty())
-        assertTrue(HelixLibraryBrowser.playlistItems("[]").isEmpty())
+        assertTrue(HelixLibraryBrowser.stationItems(null, emptyList()).isEmpty())
+        assertTrue(HelixLibraryBrowser.playlistItems(emptyList()).isEmpty())
         assertFalse(HelixLibraryBrowser.recentItems("""{"items": []}""").isNotEmpty())
     }
 

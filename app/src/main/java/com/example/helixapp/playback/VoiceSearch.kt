@@ -11,7 +11,9 @@ import com.example.helixapp.SearchSong
 import com.example.helixapp.helix.HelixTrackRequests
 import com.example.helixapp.parseAlbums
 import com.example.helixapp.parseArtists
+import com.example.helixapp.parsePlaylists
 import com.example.helixapp.parsePopularTracks
+import com.example.helixapp.parseStations
 import com.example.helixapp.parseSongs
 import android.widget.Toast
 import com.example.helixapp.toUserMessage
@@ -27,7 +29,6 @@ import kotlin.coroutines.resume
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
 import org.json.JSONObject
 import retrofit2.Response
 
@@ -280,20 +281,12 @@ object VoiceSearch {
     private suspend fun searchArtists(ctx: Context, query: String) =
         parseArtists(call(ctx) { it.ytmusicSearchArtists(query, artistLimit = 3) })
 
-    /** (id, name) of the user's playlists; system playlists by their key. */
+    /** (id to play, name) of the user's playlists. */
     private suspend fun playlists(ctx: Context): List<Pair<String, String>> =
-        namedEntries(call(ctx) { it.listPlaylists() }) { o -> o.optString("system_key").ifBlank { o.optString("id") } }
+        parsePlaylists(call(ctx) { it.listPlaylists() }).filter { it.playId.isNotBlank() }.map { it.playId to it.name }
 
     private suspend fun stations(ctx: Context): List<Pair<String, String>> =
-        namedEntries(call(ctx) { it.listStations() }) { o -> o.optString("id") }
-
-    private fun namedEntries(json: String, id: (JSONObject) -> String): List<Pair<String, String>> {
-        val arr = JSONArray(json)
-        return (0 until arr.length()).mapNotNull { i ->
-            val o = arr.optJSONObject(i) ?: return@mapNotNull null
-            id(o).takeIf { it.isNotBlank() }?.let { it to o.optString("name") }
-        }
-    }
+        parseStations(call(ctx) { it.listStations() }).filter { it.id.isNotBlank() }.map { it.id to it.name }
 
     private suspend fun call(ctx: Context, request: suspend (com.example.helixapp.HelixApi) -> Response<String>): String {
         val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))

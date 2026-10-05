@@ -7,13 +7,16 @@ import com.example.helixapp.HelixClient
 import com.example.helixapp.HelixHttpException
 import com.example.helixapp.HelixPrefs
 import com.example.helixapp.HistoryItemUi
+import com.example.helixapp.PlaylistUi
+import com.example.helixapp.StationUi
+import com.example.helixapp.parsePlaylists
+import com.example.helixapp.parseStations
 import com.example.helixapp.SearchSong
 import com.example.helixapp.helix.HelixTrackRequests
 import com.example.helixapp.parseHistoryPage
 import com.example.helixapp.parseSongs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
 import retrofit2.Response
 
 /**
@@ -56,8 +59,8 @@ object HelixLibraryBrowser {
     suspend fun children(ctx: Context, parentId: String): List<MediaItem> = when (parentId) {
         ROOT_ID -> topLevel()
         QUEUE_ID -> queueItems(ctx)
-        STATIONS_ID -> stationItems(ctx, fetch(ctx) { it.listStations() })
-        PLAYLISTS_ID -> playlistItems(fetch(ctx) { it.listPlaylists() })
+        STATIONS_ID -> stationItems(ctx, parseStations(fetch(ctx) { it.listStations() }))
+        PLAYLISTS_ID -> playlistItems(parsePlaylists(fetch(ctx) { it.listPlaylists() }))
         RECENT_ID -> recentItems(fetch(ctx) { it.history(limit = RECENT_LIMIT) })
         else -> emptyList()
     }
@@ -99,7 +102,7 @@ object HelixLibraryBrowser {
     suspend fun search(ctx: Context, query: String): List<MediaItem> {
         val q = VoiceSearch.normalize(query)
         if (q.isBlank()) return emptyList()
-        val named = (playlistItems(fetch(ctx) { it.listPlaylists() }) + stationItems(ctx, fetch(ctx) { it.listStations() }))
+        val named = (playlistItems(parsePlaylists(fetch(ctx) { it.listPlaylists() })) + stationItems(ctx, parseStations(fetch(ctx) { it.listStations() })))
             .filter { VoiceSearch.normalize(it.mediaMetadata.title.toString()).contains(q) }
         return named + songItems(ctx, fetch(ctx) { it.ytmusicSearch(query, songLimit = 15, albumLimit = 1) })
     }
@@ -122,27 +125,18 @@ object HelixLibraryBrowser {
         }
     }
 
-    internal fun stationItems(ctx: Context?, json: String): List<MediaItem> {
-        val arr = JSONArray(json)
-        return (0 until arr.length()).mapNotNull { i ->
-            val o = arr.optJSONObject(i) ?: return@mapNotNull null
-            val id = o.optString("id").ifBlank { return@mapNotNull null }
-            val name = o.optString("name").ifBlank { "Station" }
-            stationNames[id] = name
-            playable("station:$id", name, "Station", ctx?.let { artUrl(HelixPrefs.getBaseUrl(it), o.optString("thumbnail_url")) })
+    internal fun stationItems(ctx: Context?, stations: List<StationUi>): List<MediaItem> =
+        stations.filter { it.id.isNotBlank() }.map { s ->
+            val name = s.name.ifBlank { "Station" }
+            stationNames[s.id] = name
+            playable("station:${s.id}", name, "Station", ctx?.let { artUrl(HelixPrefs.getBaseUrl(it), s.thumbnailUrl) })
         }
-    }
 
-    internal fun playlistItems(json: String): List<MediaItem> {
-        val arr = JSONArray(json)
-        return (0 until arr.length()).mapNotNull { i ->
-            val o = arr.optJSONObject(i) ?: return@mapNotNull null
-            // System playlists (e.g. Liked songs) are played by their key.
-            val id = o.optString("system_key").ifBlank { o.optString("id") }.ifBlank { return@mapNotNull null }
-            val count = o.optInt("track_count", 0)
-            playable("playlist:$id", o.optString("name").ifBlank { "Playlist" }, if (count == 1) "1 song" else "$count songs", null)
+    internal fun playlistItems(playlists: List<PlaylistUi>): List<MediaItem> =
+        playlists.filter { it.playId.isNotBlank() }.map { p ->
+            val count = p.trackCount
+            playable("playlist:${p.playId}", p.name.ifBlank { "Playlist" }, if (count == 1) "1 song" else "$count songs", null)
         }
-    }
 
     internal fun recentItems(json: String): List<MediaItem> =
         parseHistoryPage(json).items.map { h ->

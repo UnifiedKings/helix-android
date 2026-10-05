@@ -78,50 +78,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class StationUi(
-    val id: String,
-    val name: String,
-    val stationType: String,
-    val config: JSONObject,
-    val seedType: String,
-    val seedTitle: String,
-    val seedArtist: String,
-    val discovery: Float,
-    val seedInfluence: Float,
-    val thumbnailUrl: String,
-)
-
-data class StationChoiceUi(
-    val value: String,
-    val label: String,
-)
-
-data class StationConfigOptionUi(
-    val key: String,
-    val label: String,
-    val type: String,
-    val description: String,
-    val required: Boolean,
-    val defaultValue: Any?,
-    val min: Double?,
-    val max: Double?,
-    val step: Double?,
-    val choices: List<StationChoiceUi>,
-    val minItems: Int?,
-    val maxItems: Int?,
-    val category: String,
-    val categoryLabel: String,
-    val categoryOrder: Int,
-    val order: Int,
-)
-
-data class StationProviderUi(
-    val stationType: String,
-    val displayName: String,
-    val description: String,
-    val configOptions: List<StationConfigOptionUi>,
-)
-
 private data class StationConfigSectionUi(
     val id: String,
     val label: String,
@@ -1331,7 +1287,7 @@ private fun ArtistSearchConfigField(
                 results = emptyList()
             } else {
                 val existingKeys = selected.map { artistSeedKey(it) }.toSet()
-                results = parseArtistSearchResults(resp.body().orEmpty())
+                results = parseArtists(resp.body().orEmpty())
                     .filter { artistSeedKey(it) !in existingKeys }
                     .take(8)
             }
@@ -1462,7 +1418,7 @@ private fun TrackSearchConfigField(
                 results = emptyList()
             } else {
                 val existingKeys = selected.map { trackSeedKey(it) }.toSet()
-                results = parseTrackSearchResults(resp.body().orEmpty())
+                results = parseSongs(resp.body().orEmpty())
                     .filter { trackSeedKey(it) !in existingKeys }
                     .take(8)
             }
@@ -1734,79 +1690,6 @@ private fun SearchTrackResultRow(
         }
         Icon(Icons.Default.Add, contentDescription = "Add track", tint = HelixAccent)
     }
-}
-
-private fun parseStations(json: String): List<StationUi> {
-    val arr = JSONArray(json)
-    val out = ArrayList<StationUi>(arr.length())
-    for (i in 0 until arr.length()) {
-        val obj = arr.optJSONObject(i) ?: continue
-        val config = obj.optJSONObject("config") ?: JSONObject()
-        out.add(
-            StationUi(
-                id = obj.optString("id", ""),
-                name = obj.optString("name", ""),
-                stationType = obj.optString("station_type", "listenbrainz_similar_artist"),
-                config = config,
-                seedType = config.optString("seed_type", obj.optString("seed_type", "")),
-                seedTitle = config.optString("seed_title", obj.optString("seed_title", "")),
-                seedArtist = config.optString("seed_artist", obj.optString("seed_artist", "")),
-                discovery = config.optDouble("discovery", obj.optDouble("discovery", 0.35)).toFloat(),
-                seedInfluence = config.optDouble("seed_influence", obj.optDouble("seed_influence", 0.75)).toFloat(),
-                thumbnailUrl = obj.optString("thumbnail_url", ""),
-            )
-        )
-    }
-    return out
-}
-
-private fun parseStationProviders(json: String): List<StationProviderUi> {
-    val arr = JSONArray(json)
-    val out = ArrayList<StationProviderUi>(arr.length())
-    for (i in 0 until arr.length()) {
-        val providerObj = arr.optJSONObject(i) ?: continue
-        val optionsArr = providerObj.optJSONArray("config_options") ?: JSONArray()
-        val options = ArrayList<StationConfigOptionUi>(optionsArr.length())
-        for (j in 0 until optionsArr.length()) {
-            val opt = optionsArr.optJSONObject(j) ?: continue
-            val choicesArr = opt.optJSONArray("choices") ?: JSONArray()
-            val choices = ArrayList<StationChoiceUi>(choicesArr.length())
-            for (k in 0 until choicesArr.length()) {
-                val choice = choicesArr.optJSONObject(k) ?: continue
-                val value = choice.optString("value", "")
-                choices.add(StationChoiceUi(value = value, label = choice.optString("label", value)))
-            }
-            options.add(
-                StationConfigOptionUi(
-                    key = opt.optString("key", ""),
-                    label = opt.optString("label", opt.optString("key", "")),
-                    type = opt.optString("type", "string"),
-                    description = opt.optString("description", ""),
-                    required = opt.optBoolean("required", false),
-                    defaultValue = opt.opt("default"),
-                    min = opt.optNullableDouble("min"),
-                    max = opt.optNullableDouble("max"),
-                    step = opt.optNullableDouble("step"),
-                    choices = choices,
-                    minItems = opt.optNullableInt("min_items"),
-                    maxItems = opt.optNullableInt("max_items"),
-                    category = opt.optString("category", "").ifBlank { "options" },
-                    categoryLabel = opt.optString("category_label", ""),
-                    categoryOrder = opt.optNullableInt("category_order") ?: 999,
-                    order = opt.optNullableInt("order") ?: 999,
-                )
-            )
-        }
-        out.add(
-            StationProviderUi(
-                stationType = providerObj.optString("station_type", ""),
-                displayName = providerObj.optString("display_name", providerObj.optString("station_type", "")),
-                description = providerObj.optString("description", ""),
-                configOptions = options.filter { it.key.isNotBlank() },
-            )
-        )
-    }
-    return out.filter { it.stationType.isNotBlank() }
 }
 
 private fun legacySongRadioSeedOption() = StationConfigOptionUi(
@@ -2219,66 +2102,6 @@ private fun parseTrackSeedSelections(
     return out.distinctBy { trackSeedKey(it) }
 }
 
-private fun parseArtistSearchResults(json: String): List<SearchArtist> {
-    val root = JSONObject(json)
-    val artists = root.optJSONArray("artists") ?: JSONArray()
-    val out = ArrayList<SearchArtist>(artists.length())
-    for (i in 0 until artists.length()) {
-        val obj = artists.optJSONObject(i) ?: continue
-        val name = obj.optString("name", obj.optString("artist", ""))
-        val browseId = obj.optString("browse_id", obj.optString("browseId", obj.optString("artist_id", "")))
-        val thumb = when {
-            obj.has("thumbnail_url") -> obj.optString("thumbnail_url", "")
-            obj.has("thumbnail") -> obj.optString("thumbnail", "")
-            obj.has("thumb") -> obj.optString("thumb", "")
-            else -> ""
-        }
-        out.add(
-            SearchArtist(
-                name = name,
-                thumbnailUrl = thumb,
-                browseId = browseId,
-                subscriberCount = obj.optString("subscriber_count", obj.optString("subscribers", "")),
-                monthlyListeners = obj.optString("monthly_listeners", ""),
-            )
-        )
-    }
-    return out
-}
-
-private fun parseTrackSearchResults(json: String): List<SearchSong> {
-    val root = JSONObject(json)
-    val songs = root.optJSONArray("songs") ?: JSONArray()
-    val out = ArrayList<SearchSong>(songs.length())
-    for (i in 0 until songs.length()) {
-        val obj = songs.optJSONObject(i) ?: continue
-        val title = obj.optString("title", "")
-        val artist = obj.optString("artist", obj.optString("artists", ""))
-        val album = obj.optString("album", "")
-        val videoId = obj.optString("video_id", obj.optString("videoId", ""))
-        val source = obj.optString("source", "ytmusic")
-        val subsonicSongId = obj.optString("subsonic_song_id", obj.optString("subsonicSongId", ""))
-        val thumb = when {
-            obj.has("thumbnail_url") -> obj.optString("thumbnail_url", "")
-            obj.has("thumbnail") -> obj.optString("thumbnail", "")
-            obj.has("thumb") -> obj.optString("thumb", "")
-            else -> ""
-        }
-        out.add(
-            SearchSong(
-                title = title,
-                artist = artist,
-                album = album,
-                thumbnailUrl = thumb,
-                videoId = videoId,
-                source = source,
-                subsonicSongId = subsonicSongId,
-            )
-        )
-    }
-    return out
-}
-
 private fun artistSeedKey(artist: StationArtistSeedUi): String {
     return artist.browseId.ifBlank { artist.name.trim().lowercase() }
 }
@@ -2324,16 +2147,6 @@ private fun StationConfigOptionUi.defaultAsDouble(): Double {
         is Number -> defaultValue.toDouble()
         else -> defaultValue?.toString()?.toDoubleOrNull() ?: 0.0
     }
-}
-
-private fun JSONObject.optNullableDouble(key: String): Double? {
-    if (!has(key) || isNull(key)) return null
-    return optDouble(key)
-}
-
-private fun JSONObject.optNullableInt(key: String): Int? {
-    if (!has(key) || isNull(key)) return null
-    return optInt(key)
 }
 
 private fun trimFloatString(value: Float): String {

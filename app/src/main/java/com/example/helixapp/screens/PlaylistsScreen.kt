@@ -55,17 +55,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
 import org.json.JSONObject
-
-data class PlaylistUi(
-    val id: String,
-    val name: String,
-    val systemKey: String,
-    val kind: String,
-    val trackCount: Int,
-    val thumbnailUrl: String,
-)
 
 @Composable
 fun PlaylistsScreen(
@@ -418,24 +408,4 @@ private fun playlistBadgeLabel(playlist: PlaylistUi): String? {
 private fun simpleTitleCase(value: String): String {
     if (value.isBlank()) return value
     return value.substring(0, 1).uppercase() + value.substring(1)
-}
-
-private fun parsePlaylists(json: String): List<PlaylistUi> {
-    val arr = JSONArray(json)
-    val out = ArrayList<PlaylistUi>(arr.length())
-    for (i in 0 until arr.length()) {
-        val o = arr.optJSONObject(i) ?: continue
-        val systemKey = o.optString("system_key", "")
-        out.add(
-            PlaylistUi(
-                id = o.optString("id", ""),
-                name = o.optString("name", ""),
-                systemKey = systemKey,
-                kind = o.optString("kind", ""),
-                trackCount = o.optInt("track_count", 0),
-                thumbnailUrl = o.optString("thumbnail_url", ""),
-            )
-        )
-    }
-    return out
 }

@@ -60,23 +60,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
 import org.json.JSONObject
-
-private data class ArtistDetailUi(
-    val browseId: String,
-    val name: String,
-    val thumbnailUrl: String,
-    val mbArtistId: String,
-    val resolutionStatus: String,
-)
-
-private data class SimilarArtistUi(
-    val name: String,
-    val mbArtistId: String = "",
-    val browseId: String = "",
-    val thumbnailUrl: String = "",
-)
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -129,7 +113,7 @@ fun ArtistScreen(
                 val searchThumb = runCatching {
                     withContext(Dispatchers.IO) { api.ytmusicSearchArtists(artist.name.ifBlank { browseId }) }
                 }.getOrNull()?.takeIf { it.isSuccessful }?.body().orEmpty().let { body ->
-                    parseSearchArtists(body).firstOrNull {
+                    runCatching { parseArtists(body) }.getOrDefault(emptyList()).firstOrNull {
                         it.browseId == browseId || it.name.equals(artist.name, ignoreCase = true)
                     }?.thumbnailUrl.orEmpty()
                 }
@@ -564,90 +548,4 @@ private fun SimilarArtistCard(
             textAlign = TextAlign.Center,
         )
     }
-}
-
-private fun parseSearchArtists(json: String): List<SearchArtist> {
-    if (json.isBlank()) return emptyList()
-    val root = runCatching { JSONObject(json) }.getOrNull() ?: return emptyList()
-    val artists = root.optJSONArray("artists") ?: JSONArray()
-    val out = ArrayList<SearchArtist>(artists.length())
-    for (i in 0 until artists.length()) {
-        val o = artists.optJSONObject(i) ?: continue
-        val name = o.optString("name")
-        val thumb = o.optString("thumbnail_url", o.optString("thumbnail", ""))
-        val id = o.optString("browse_id", o.optString("artist_id", ""))
-        if (name.isBlank()) continue
-        out += SearchArtist(name = name, thumbnailUrl = thumb, browseId = id)
-    }
-    return out
-}
-
-private fun parseArtistDetail(json: String, browseId: String): ArtistDetailUi {
-    val root = JSONObject(json)
-    return ArtistDetailUi(
-        browseId = root.optString("browse_id", root.optString("artist_id", browseId)).ifBlank { browseId },
-        name = root.optString("name", root.optString("artist", "")),
-        thumbnailUrl = root.optString("thumbnail_url", root.optString("thumbnail", "")),
-        mbArtistId = root.optString("mb_artist_id", ""),
-        resolutionStatus = root.optString("mb_resolution_status", "unresolved"),
-    )
-}
-
-internal fun parsePopularTracks(json: String): List<SearchSong> {
-    val root = JSONObject(json)
-    val arr = root.optJSONArray("tracks") ?: JSONArray()
-    val out = ArrayList<SearchSong>(arr.length())
-    for (i in 0 until arr.length()) {
-        val o = arr.optJSONObject(i) ?: continue
-        out.add(
-            SearchSong(
-                title = o.optString("title", ""),
-                artist = o.optString("artist", root.optString("artist_name", "")),
-                album = o.optString("album", ""),
-                thumbnailUrl = o.optString("thumbnail_url", o.optString("thumbnail", "")),
-                videoId = o.optString("video_id", o.optString("videoId", "")),
-            )
-        )
-    }
-    return out
-}
-
-private fun parseArtistAlbums(json: String): List<SearchAlbum> {
-    val root = JSONObject(json)
-    val arr = root.optJSONArray("albums") ?: JSONArray()
-    val out = ArrayList<SearchAlbum>(arr.length())
-    for (i in 0 until arr.length()) {
-        val o = arr.optJSONObject(i) ?: continue
-        out.add(
-            SearchAlbum(
-                title = o.optString("title", ""),
-                artist = o.optString("artist", root.optString("artist_name", "")),
-                year = o.optString("year", ""),
-                thumbnailUrl = o.optString("thumbnail_url", o.optString("thumbnail", "")),
-                browseId = o.optString("browse_id", o.optString("browseId", "")),
-            )
-        )
-    }
-    return out
-}
-
-private fun parseSimilarArtists(json: String): List<SimilarArtistUi> {
-    val root = JSONObject(json)
-    val arr = root.optJSONArray("similar_artists") ?: JSONArray()
-    val out = ArrayList<SimilarArtistUi>(arr.length())
-    for (i in 0 until arr.length()) {
-        val o = arr.optJSONObject(i) ?: continue
-        val name = o.optString("name")
-            .ifBlank { o.optString("artist_name") }
-            .ifBlank { o.optString("artist") }
-        out.add(
-            SimilarArtistUi(
-                name = name,
-                mbArtistId = o.optString("mb_artist_id", o.optString("artist_mbid", "")),
-                browseId = o.optString("browse_id", o.optString("yt_browse_id", "")),
-                thumbnailUrl = o.optString("thumbnail_url", o.optString("thumbnail", "")),
-            )
-        )
-    }
-    return out.filter { it.name.isNotBlank() || it.browseId.isNotBlank() || it.mbArtistId.isNotBlank() }
 }
