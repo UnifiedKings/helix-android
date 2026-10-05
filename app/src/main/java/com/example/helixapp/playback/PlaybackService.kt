@@ -261,6 +261,20 @@ class PlaybackService : MediaSessionService() {
                     lastEndedAtMs = nowMs
                     lastEndedUri = uri
 
+                    if (SleepTimer.consumeTrackEnd()) {
+                        // Sleep timer set to "end of track": advance the queue so the next song
+                        // is ready later, but stay silent and leave the session paused (the
+                        // server's /ended marks it playing again).
+                        HelixTransport.holdLocalPlayback()
+                        scope.launch {
+                            runCatching { PlayerCommandCoordinator.trackEnded(this@PlaybackService) }
+                                .onFailure { Log.e("HELIX_PLAYER", "Advancing after sleep timer failed", it) }
+                            runCatching { PlayerCommandCoordinator.pause(this@PlaybackService) }
+                                .onFailure { Log.e("HELIX_PLAYER", "Pausing after sleep timer failed", it) }
+                        }
+                        return
+                    }
+
                     // Must be set synchronously, before Media3's notification manager reacts
                     // to STATE_ENDED and demotes the service.
                     beginHandoff("track ended")

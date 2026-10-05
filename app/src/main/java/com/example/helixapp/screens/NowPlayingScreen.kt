@@ -904,6 +904,8 @@ fun NowPlayingScreen() {
                         )
                     }
 
+                    SleepTimerButton()
+
                     IconButton(
                         enabled = (now != null) && !ratingInFlight,
                         onClick = { rateLike() },
