@@ -98,7 +98,13 @@ interface HelixApi {
 
     // Listening history
     @GET("api/history")
-    suspend fun history(@Query("station_id") stationId: String? = null): Response<String>
+    suspend fun history(
+        @Query("station_id") stationId: String? = null,
+        // "completed" or "skipped"; null for both.
+        @Query("event") event: String? = null,
+        @Query("limit") limit: Int = 100,
+        @Query("offset") offset: Int = 0,
+    ): Response<String>
 
     // Playlists
     @GET("api/playlists")
