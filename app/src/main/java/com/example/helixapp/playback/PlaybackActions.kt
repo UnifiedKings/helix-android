@@ -102,7 +102,7 @@ object PlaybackActions {
         return false
     }
 
-    private fun isStationReady(stateJson: String, stationId: String, stationName: String): Boolean {
+    internal fun isStationReady(stateJson: String, stationId: String, stationName: String): Boolean {
         val root = runCatching { JSONObject(stateJson) }.getOrNull() ?: return false
         val activeStation = root.optJSONObject("active_station")
         val activeId = activeStation

@@ -75,6 +75,8 @@ dependencies {
     implementation(libs.okhttp.logging)
 
     testImplementation(libs.junit)
+    // Android's org.json is a stub on the JVM; unit tests need the real implementation.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }
