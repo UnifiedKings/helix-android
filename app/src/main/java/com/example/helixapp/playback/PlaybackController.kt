@@ -131,7 +131,14 @@ object PlaybackController {
      */
     @Synchronized
     fun get(ctx: Context, onReady: (MediaController) -> Unit) {
-        val existing = controller
+        val existing = controller?.takeIf { it.isConnected }
+        if (existing == null && controller != null) {
+            // The service was destroyed (e.g. after the task was removed) and took the
+            // connection with it. Drop the dead controller and connect again below.
+            Log.w("HELIX_PLAYER", "MediaController disconnected; reconnecting")
+            controller = null
+            controllerFuture = null
+        }
         if (existing != null) {
             val looper = existing.applicationLooper
             if (Looper.myLooper() == looper) {
@@ -151,7 +158,17 @@ object PlaybackController {
 
         future.addListener(
             {
-                val c = future.get()
+                val c = try {
+                    future.get()
+                } catch (e: Exception) {
+                    // Connecting to PlaybackService failed. Forget the failed attempt so the
+                    // next call retries, instead of rethrowing the same failure forever.
+                    Log.e("HELIX_PLAYER", "MediaController connection failed", e)
+                    synchronized(this) {
+                        if (controllerFuture === future) controllerFuture = null
+                    }
+                    return@addListener
+                }
                 controller = c
                 Log.d("HELIX_PLAYER", "MediaController ready")
                 onReady(c)
