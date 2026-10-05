@@ -40,7 +40,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 
 @Composable
-fun ConnectionSettingsScreen(onBack: () -> Unit) {
+fun ConnectionSettingsScreen(onBack: () -> Unit, onDisconnected: () -> Unit = {}) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -149,25 +149,12 @@ fun ConnectionSettingsScreen(onBack: () -> Unit) {
                     status = "Connecting…"
                     scope.launch {
                         try {
-                            val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                            val json = JSONObject().put("username", u).put("password", password).toString()
-                            val requestBody = json.toRequestBody("application/json; charset=utf-8".toMediaType())
-                            val resp = withContext(Dispatchers.IO) { api.login(requestBody) }
-                            if (!resp.isSuccessful) {
-                                status = "Login failed (HTTP ${resp.code()})"
-                                return@launch
-                            }
-                            val token = extractSessionTokenForSettings(resp.headers())
-                            if (token.isNullOrBlank()) {
-                                status = "Login succeeded, but no session cookie was returned"
-                                return@launch
-                            }
-                            AppPrefs.saveSessionCookie(ctx, token)
+                            HelixLogin.logIn(ctx, b, u, password)
                             password = ""
                             connected = true
                             status = "Connected as $u"
-                        } catch (e: Exception) {
-                            status = "Connection error: ${e.message ?: e.javaClass.simpleName}"
+                        } catch (e: LoginException) {
+                            status = e.message ?: "Login failed"
                         } finally {
                             busy = false
                         }
@@ -192,6 +179,7 @@ fun ConnectionSettingsScreen(onBack: () -> Unit) {
                             connected = false
                             status = "Disconnected"
                             busy = false
+                            onDisconnected()
                         }
                     }
                 },
@@ -206,15 +194,4 @@ fun ConnectionSettingsScreen(onBack: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
-}
-
-private fun extractSessionTokenForSettings(headers: Headers): String? {
-    for (setCookie in headers.values("Set-Cookie")) {
-        val idx = setCookie.indexOf("mr_session=")
-        if (idx >= 0) {
-            val token = setCookie.substring(idx + "mr_session=".length).substringBefore(';').trim()
-            if (token.isNotBlank()) return token
-        }
-    }
-    return null
 }

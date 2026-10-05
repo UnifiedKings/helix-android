@@ -13,6 +13,10 @@ object HelixPrefs {
         return p.getString(KEY_BASE_URL, defaultValue) ?: defaultValue
     }
 
+    /** The server address the user saved, or null on a fresh install. */
+    fun getSavedBaseUrl(context: Context): String? =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_BASE_URL, null)
+
     fun setBaseUrl(context: Context, value: String) {
         val v = value.trim().trimEnd('/')
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

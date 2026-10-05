@@ -30,9 +30,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.example.helixapp.playback.PlayerRealtime
@@ -166,6 +169,21 @@ private fun HelixApp(openNowPlayingSignal: Int) {
         navigateToTab(TabDest.NowPlaying)
     }
 
+    val ctx = LocalContext.current
+    // No saved session (fresh install, or after Disconnect): show sign-in instead of the app.
+    var needsLogin by remember { mutableStateOf(HelixPrefs.getSessionToken(ctx).isNullOrBlank()) }
+    if (needsLogin) {
+        // A Surface (not a bare background) so text gets the theme's content color.
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = HelixBackground,
+            contentColor = MaterialTheme.colorScheme.onBackground,
+        ) {
+            WelcomeScreen(onConnected = { needsLogin = false })
+        }
+        return
+    }
+
     val sessionExpired by AuthState.sessionExpired.collectAsState()
     val messageHost = remember { SnackbarHostState() }
     LaunchedEffect(Unit) {
@@ -269,7 +287,14 @@ private fun HelixApp(openNowPlayingSignal: Int) {
                     )
                 }
                 composable("settings/connection") {
-                    ConnectionSettingsScreen(onBack = { nav.popBackStack() })
+                    ConnectionSettingsScreen(
+                        onBack = { nav.popBackStack() },
+                        onDisconnected = {
+                            // Reset to the Player so signing back in starts there.
+                            navigateToTab(TabDest.NowPlaying)
+                            needsLogin = true
+                        },
+                    )
                 }
                 composable("settings/playback") {
                     PlaybackSettingsScreen(onBack = { nav.popBackStack() })
