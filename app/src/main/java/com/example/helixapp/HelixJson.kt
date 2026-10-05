@@ -203,6 +203,23 @@ internal fun parseSubsonicResolve(json: String): Map<String, Boolean> {
     return out
 }
 
+// ---- Likes and dislikes -----------------------------------------------------------------
+
+/** An is-liked/is-disliked answer: a bare `true`, or an object with one of [keys] set. */
+internal fun parseRatingFlag(body: String, keys: List<String>): Boolean {
+    if (body.trim().equals("true", ignoreCase = true)) return true
+    val obj = runCatching { JSONObject(body) }.getOrNull() ?: return false
+    return keys.any { obj.optBoolean(it, false) }
+}
+
+/** (title, artist) of each song in /api/likes. */
+internal fun parseLikedSongs(json: String): List<Pair<String, String>> {
+    val items = JSONObject(json).optJSONArray("items") ?: return emptyList()
+    return (0 until items.length()).mapNotNull { i ->
+        items.optJSONObject(i)?.let { it.optString("title", "") to it.optString("artist", "") }
+    }
+}
+
 // ---- Stations ---------------------------------------------------------------------------
 
 internal fun parseStations(json: String): List<StationUi> {

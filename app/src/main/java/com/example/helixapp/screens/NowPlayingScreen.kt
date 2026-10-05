@@ -68,38 +68,25 @@ import com.example.helixapp.ui.theme.HelixAccent
 import com.example.helixapp.ui.theme.HelixBorder
 import com.example.helixapp.ui.theme.HelixMuted
 import com.example.helixapp.ui.theme.HelixSurfaceRaised
-import com.example.helixapp.playback.HelixTransport
-import com.example.helixapp.playback.NowPlayingUi
 import com.example.helixapp.playback.PlaybackController
+import com.example.helixapp.data.RatedTrack
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.helixapp.playback.PlayerCommandCoordinator
-import com.example.helixapp.playback.PlayerStateStore
 import com.example.helixapp.playback.DevicePlayback
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
-import org.json.JSONObject
 
 /** How many 2-second checks to make after "Add to Subsonic" before giving up (~2 minutes). */
-private const val SUBSONIC_POLL_ATTEMPTS = 60
-
 @Composable
-fun NowPlayingScreen() {
+fun NowPlayingScreen(viewModel: NowPlayingViewModel = helixViewModel { NowPlayingViewModel(it) }) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-
-    var status by remember { mutableStateOf("Idle") }
-    var loading by remember { mutableStateOf(false) }
-    val playerState by PlayerStateStore.state.collectAsState()
+    val state by viewModel.state.collectAsStateWithLifecycle()
     // False when the phone is only a remote: the play state then comes from the backend,
     // since the local player stays empty.
     val playOnDevice by remember { DevicePlayback.isEnabled(ctx); DevicePlayback.enabled }.collectAsState()
-    var now by remember { mutableStateOf(PlayerStateStore.state.value?.now) }
-    var activeStationName by remember { mutableStateOf(PlayerStateStore.state.value?.activeStationName) }
+    val now = state.now
+    val activeStationName = state.activeStationName
 
     var metaTitle by remember { mutableStateOf<String?>(null) }
     var metaArtist by remember { mutableStateOf<String?>(null) }
@@ -107,19 +94,15 @@ fun NowPlayingScreen() {
     var metaArtUri by remember { mutableStateOf<String?>(null) }
     var metaMediaId by remember { mutableStateOf<String?>(null) }
 
-    var currentYtVideoId by remember { mutableStateOf<String?>(null) }
-    var currentSubsonicSongId by remember { mutableStateOf<String?>(null) }
-
     var isPlaying by remember { mutableStateOf(false) }
     var playPauseInFlight by remember { mutableStateOf(false) }
 
-    var isLiked by remember { mutableStateOf(false) }
-    var isDisliked by remember { mutableStateOf(false) }
-    var ratingInFlight by remember { mutableStateOf(false) }
-
-    var isInSubsonic by remember { mutableStateOf(false) }
-    var subsonicAvailabilityKnown by remember { mutableStateOf(false) }
-    var addToSubsonicPending by remember { mutableStateOf(false) }
+    val isLiked = state.liked
+    val isDisliked = state.disliked
+    val ratingInFlight = state.ratingInFlight
+    val isInSubsonic = state.inSubsonic == true
+    val subsonicAvailabilityKnown = state.inSubsonic != null
+    val addToSubsonicPending = state.addToSubsonicPending
 
     var controller by remember { mutableStateOf<MediaController?>(null) }
     var positionMs by remember { mutableStateOf(0L) }
@@ -135,263 +118,10 @@ fun NowPlayingScreen() {
         return if (h > 0) String.format("%d:%02d:%02d", h, m, s) else String.format("%d:%02d", m, s)
     }
 
-    fun refresh() {
-        if (HelixPrefs.getSessionToken(ctx).isNullOrBlank()) {
-            status = "Not logged in — go to Login"
-            now = null
-            activeStationName = null
-            return
-        }
-
-        loading = true
-        status = "Loading…"
-        scope.launch {
-            try {
-                // Publishes to PlayerStateStore; the effect below applies it.
-                PlayerStateStore.refresh(ctx)
-                status = if (PlayerStateStore.state.value?.now == null) "Nothing playing" else "Done"
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                status = "Error: ${e.toUserMessage("Loading the player")}"
-            } finally {
-                loading = false
-            }
-        }
-    }
-
-    LaunchedEffect(Unit) { refresh() }
-
-    // Shared backend state: websocket snapshots, coordinator syncs and explicit refreshes.
-    LaunchedEffect(playerState) {
-        val ps = playerState ?: return@LaunchedEffect
-        now = ps.now
-        activeStationName = ps.activeStationName
-        currentYtVideoId = ps.now?.ytVideoId?.takeIf { it.isNotBlank() }
-        currentSubsonicSongId = ps.now?.subsonicSongId?.takeIf { it.isNotBlank() }
-        // Media3's listener is the source of truth for isPlaying once connected; the backend
-        // value only seeds it (or drives it entirely when this phone plays no audio).
-        if (controller == null || !playOnDevice) isPlaying = ps.isPlaying
-        if (!loading) status = if (ps.now == null) "Nothing playing" else "Done"
-    }
-
-    suspend fun resolveCurrentSubsonicAvailability(): Boolean {
-        val current = now ?: return false
-        if (!current.subsonicSongId.isNullOrBlank() || current.source.equals("subsonic", ignoreCase = true)) {
-            return true
-        }
-
-        val title = current.title.trim()
-        val artist = current.artist.trim()
-        if (title.isBlank() || artist.isBlank()) return false
-
-        val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-        val ytId = current.ytVideoId?.trim().orEmpty()
-        val album = current.album.trim()
-        val resolveKey = if (ytId.isNotBlank()) {
-            "song:$ytId"
-        } else {
-            val normalizedTitle = title.lowercase().replace(Regex("\\s+"), " ")
-            val normalizedArtist = artist.lowercase().replace(Regex("\\s+"), " ")
-            val normalizedAlbum = album.lowercase().replace(Regex("\\s+"), " ")
-            "song:text:$normalizedTitle|$normalizedArtist|$normalizedAlbum|${current.durationMs}"
-        }
-
-        val payload = JSONObject().apply {
-            put("songs", JSONArray().apply {
-                put(JSONObject().apply {
-                    put("key", resolveKey)
-                    put("title", title)
-                    put("artist", artist)
-                    if (album.isNotBlank()) put("album", album)
-                    if (current.durationMs > 0L) put("duration_ms", current.durationMs)
-                    if (ytId.isNotBlank()) put("yt_video_id", ytId)
-                })
-            })
-            put("albums", JSONArray())
-        }
-
-        val body = payload.toString().toRequestBody("application/json".toMediaType())
-        val resp = withContext(Dispatchers.IO) { api.subsonicResolve(body) }
-        if (!resp.isSuccessful) return false
-
-        return JSONObject(resp.body().orEmpty())
-            .optJSONObject("songs")
-            ?.optJSONObject(resolveKey)
-            ?.optBoolean("available", false) == true
-    }
-
-    LaunchedEffect(now?.queueItemId, now?.title, now?.artist, now?.subsonicSongId) {
-        if (now == null) {
-            addToSubsonicPending = false
-            isInSubsonic = false
-            subsonicAvailabilityKnown = false
-            return@LaunchedEffect
-        }
-
-        addToSubsonicPending = false
-        subsonicAvailabilityKnown = false
-        isInSubsonic = runCatching { resolveCurrentSubsonicAvailability() }.getOrDefault(false)
-        subsonicAvailabilityKnown = true
-    }
-
-    LaunchedEffect(addToSubsonicPending, now?.queueItemId) {
-        if (!addToSubsonicPending || now == null) return@LaunchedEffect
-        // Poll until the import shows up, but give up after a while: a failed server-side
-        // import would otherwise keep this polling every 2 s for as long as the screen is open.
-        repeat(SUBSONIC_POLL_ATTEMPTS) {
-            delay(2_000)
-            val available = runCatching { resolveCurrentSubsonicAvailability() }.getOrDefault(false)
-            if (available) {
-                isInSubsonic = true
-                subsonicAvailabilityKnown = true
-                addToSubsonicPending = false
-                refresh()
-                return@LaunchedEffect
-            }
-        }
-        addToSubsonicPending = false
-        UserMessages.show("Still not in Subsonic after 2 minutes. The import may have failed; try adding it again.")
-    }
-
-    fun addCurrentToSubsonic() {
-        val current = now ?: return
-        if (isInSubsonic || addToSubsonicPending) return
-
-        val ytId = current.ytVideoId?.trim().orEmpty()
-        val title = current.title.trim()
-        val artist = current.artist.trim()
-        if (title.isBlank() || artist.isBlank()) return
-
-        addToSubsonicPending = true
-        scope.launch {
-            try {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val payload = JSONObject().apply {
-                    if (ytId.isNotBlank()) put("yt_video_id", ytId)
-                    put("title", title)
-                    put("artist", artist)
-                    if (current.album.isNotBlank()) put("album", current.album)
-                    if (current.artUrl.isNotBlank()) put("art_url", current.artUrl)
-                }
-
-                val body = payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
-                val resp = withContext(Dispatchers.IO) { api.subsonicAddTrack(body) }
-                if (!resp.isSuccessful) {
-                    addToSubsonicPending = false
-                    status = "Add to Subsonic failed (HTTP ${resp.code()})"
-                }
-            } catch (e: Exception) {
-                addToSubsonicPending = false
-                status = "Add to Subsonic error: ${e.javaClass.simpleName}"
-            }
-        }
-    }
-
-    LaunchedEffect(
-        currentYtVideoId,
-        currentSubsonicSongId,
-        now?.queueItemId,
-        now?.title,
-        now?.artist
-    ) {
-        val hasStableId = !currentYtVideoId.isNullOrBlank() || !currentSubsonicSongId.isNullOrBlank()
-        val hasTextIdentity = !now?.title.isNullOrBlank() && !now?.artist.isNullOrBlank()
-
-        if (!hasStableId && !hasTextIdentity) {
-            isLiked = false
-            isDisliked = false
-            return@LaunchedEffect
-        }
-
-        runCatching {
-            val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-
-            fun parseRating(body: String, keys: List<String>): Boolean {
-                if (body.trim().equals("true", ignoreCase = true)) return true
-                val obj = runCatching { JSONObject(body) }.getOrNull() ?: return false
-                return keys.any { obj.optBoolean(it, false) }
-            }
-
-            suspend fun fetchLiked(): Boolean {
-                val subId = currentSubsonicSongId?.takeIf { it.isNotBlank() }
-                if (subId != null) {
-                    val resp = withContext(Dispatchers.IO) {
-                        api.likesIsLiked(ytVideoId = null, subsonicSongId = subId)
-                    }
-                    if (resp.isSuccessful && parseRating(resp.body().orEmpty(), listOf("liked", "is_liked", "isLiked"))) {
-                        return true
-                    }
-                }
-
-                val ytId = currentYtVideoId?.takeIf { it.isNotBlank() }
-                if (ytId != null) {
-                    val resp = withContext(Dispatchers.IO) {
-                        api.likesIsLiked(ytVideoId = ytId, subsonicSongId = null)
-                    }
-                    if (resp.isSuccessful && parseRating(resp.body().orEmpty(), listOf("liked", "is_liked", "isLiked"))) {
-                        return true
-                    }
-                }
-
-                val currentTitle = (now?.title ?: metaTitle ?: "").trim()
-                val currentArtist = (now?.artist ?: metaArtist ?: "").trim()
-                if (currentTitle.isNotBlank() && currentArtist.isNotBlank()) {
-                    val resp = withContext(Dispatchers.IO) { api.likesList() }
-                    if (resp.isSuccessful) {
-                        val root = runCatching { JSONObject(resp.body().orEmpty()) }.getOrNull()
-                        val items = root?.optJSONArray("items")
-                        if (items != null) {
-                            fun norm(v: String): String = v.trim().lowercase()
-                            val wantedTitle = norm(currentTitle)
-                            val wantedArtist = norm(currentArtist)
-
-                            for (i in 0 until items.length()) {
-                                val item = items.optJSONObject(i) ?: continue
-                                if (
-                                    norm(item.optString("title", "")) == wantedTitle &&
-                                    norm(item.optString("artist", "")) == wantedArtist
-                                ) {
-                                    return true
-                                }
-                            }
-                        }
-                    }
-                }
-
-                return false
-            }
-
-            suspend fun fetchDisliked(): Boolean {
-                val subId = currentSubsonicSongId?.takeIf { it.isNotBlank() }
-                if (subId != null) {
-                    val resp = withContext(Dispatchers.IO) {
-                        api.dislikesIsDisliked(ytVideoId = null, subsonicSongId = subId)
-                    }
-                    if (resp.isSuccessful && parseRating(resp.body().orEmpty(), listOf("disliked", "is_disliked", "isDisliked"))) {
-                        return true
-                    }
-                }
-
-                val ytId = currentYtVideoId?.takeIf { it.isNotBlank() }
-                if (ytId != null) {
-                    val resp = withContext(Dispatchers.IO) {
-                        api.dislikesIsDisliked(ytVideoId = ytId, subsonicSongId = null)
-                    }
-                    if (resp.isSuccessful && parseRating(resp.body().orEmpty(), listOf("disliked", "is_disliked", "isDisliked"))) {
-                        return true
-                    }
-                }
-
-                return false
-            }
-
-            isLiked = fetchLiked()
-            isDisliked = fetchDisliked()
-        }.onFailure {
-            isLiked = false
-            isDisliked = false
-        }
+    // Media3's listener is the source of truth for isPlaying once connected; the backend value
+    // only seeds it (or drives it entirely when this phone plays no audio).
+    LaunchedEffect(state.backendPlaying, controller, playOnDevice) {
+        if (controller == null || !playOnDevice) isPlaying = state.backendPlaying
     }
 
     DisposableEffect(Unit) {
@@ -552,137 +282,25 @@ fun NowPlayingScreen() {
         }
     }
 
-    fun rateLike() {
-        if (currentYtVideoId.isNullOrBlank() && currentSubsonicSongId.isNullOrBlank()) return
-
-        val title = (
-            (if (mediaMatchesBackend) metaTitle else now?.title)
-                ?: now?.title
-                ?: ""
-        ).trim()
-
-        val artist = (
-            (if (mediaMatchesBackend) metaArtist else now?.artist)
-                ?: now?.artist
-                ?: ""
-        ).trim()
-
-        val album = (
-            (if (mediaMatchesBackend) metaAlbum else now?.album)
-                ?: now?.album
-                ?: ""
-        ).trim()
-
-        val artUrl = (
-            (if (mediaMatchesBackend) metaArtUri else now?.artUrl)
-                ?: now?.artUrl
-                ?: ""
-        ).trim()
-
-        val src = (now?.source ?: "").trim()
-        val dur = if (mediaMatchesBackend && durationMs > 0) {
-            durationMs
-        } else {
-            now?.durationMs ?: 0L
-        }
-
-        scope.launch {
-            val prevLiked = isLiked
-            val prevDisliked = isDisliked
-            ratingInFlight = true
-            isLiked = !prevLiked
-            if (!prevLiked) isDisliked = false
-
-            try {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val mt = "application/json; charset=utf-8".toMediaType()
-                val payload = JSONObject()
-                    .put("title", title)
-                    .put("artist", artist)
-                    .put("album", album)
-                    .put("duration_ms", dur)
-                    .put("art_url", artUrl)
-                    .put("source", src)
-                    .put("yt_video_id", currentYtVideoId)
-                    .put("subsonic_song_id", currentSubsonicSongId)
-                    .toString()
-                    .toRequestBody(mt)
-
-                withContext(Dispatchers.IO) { api.likesToggle(payload) }
-            } catch (_: Exception) {
-                isLiked = prevLiked
-                isDisliked = prevDisliked
-            } finally {
-                ratingInFlight = false
-            }
-        }
+    /** The song as shown: Media3's metadata when it matches the backend's current song. */
+    fun ratedTrack(): RatedTrack? {
+        val current = now ?: return null
+        fun pick(local: String?, backend: String) = ((if (mediaMatchesBackend) local else backend) ?: backend).trim()
+        return RatedTrack(
+            title = pick(metaTitle, current.title),
+            artist = pick(metaArtist, current.artist),
+            album = pick(metaAlbum, current.album),
+            durationMs = if (mediaMatchesBackend && durationMs > 0) durationMs else current.durationMs,
+            artUrl = pick(metaArtUri, current.artUrl),
+            source = current.source.trim(),
+            ytVideoId = current.ytVideoId?.takeIf { it.isNotBlank() },
+            subsonicSongId = current.subsonicSongId?.takeIf { it.isNotBlank() },
+        )
     }
 
-    fun rateDislike() {
-        if (currentYtVideoId.isNullOrBlank() && currentSubsonicSongId.isNullOrBlank()) return
+    fun rateLike() { ratedTrack()?.let(viewModel::toggleLike) }
 
-        val title = (
-            (if (mediaMatchesBackend) metaTitle else now?.title)
-                ?: now?.title
-                ?: ""
-        ).trim()
-
-        val artist = (
-            (if (mediaMatchesBackend) metaArtist else now?.artist)
-                ?: now?.artist
-                ?: ""
-        ).trim()
-
-        val album = (
-            (if (mediaMatchesBackend) metaAlbum else now?.album)
-                ?: now?.album
-                ?: ""
-        ).trim()
-
-        val artUrl = (
-            (if (mediaMatchesBackend) metaArtUri else now?.artUrl)
-                ?: now?.artUrl
-                ?: ""
-        ).trim()
-
-        val src = (now?.source ?: "").trim()
-        val dur = if (mediaMatchesBackend && durationMs > 0) {
-            durationMs
-        } else {
-            now?.durationMs ?: 0L
-        }
-
-        scope.launch {
-            val prevLiked = isLiked
-            val prevDisliked = isDisliked
-            ratingInFlight = true
-            isDisliked = !prevDisliked
-            if (!prevDisliked) isLiked = false
-
-            try {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val mt = "application/json; charset=utf-8".toMediaType()
-                val payload = JSONObject()
-                    .put("title", title)
-                    .put("artist", artist)
-                    .put("album", album)
-                    .put("duration_ms", dur)
-                    .put("art_url", artUrl)
-                    .put("source", src)
-                    .put("yt_video_id", currentYtVideoId)
-                    .put("subsonic_song_id", currentSubsonicSongId)
-                    .toString()
-                    .toRequestBody(mt)
-
-                withContext(Dispatchers.IO) { api.dislikesToggle(payload) }
-            } catch (_: Exception) {
-                isLiked = prevLiked
-                isDisliked = prevDisliked
-            } finally {
-                ratingInFlight = false
-            }
-        }
-    }
+    fun rateDislike() { ratedTrack()?.let(viewModel::toggleDislike) }
 
     val safeDur = durationMs.coerceAtLeast(0L)
     val safePos = (if (userSeeking) seekTargetMs else positionMs)
@@ -862,7 +480,7 @@ fun NowPlayingScreen() {
                                     }
                                 } else {
                                     Button(
-                                        onClick = { addCurrentToSubsonic() },
+                                        onClick = viewModel::addToSubsonic,
                                         shape = RoundedCornerShape(9.dp),
                                         colors = ButtonDefaults.buttonColors(
                                             containerColor = HelixAccent,
@@ -975,7 +593,7 @@ fun NowPlayingScreen() {
                                     scope.launch {
                                         runCatching {
                                             PlayerCommandCoordinator.syncFromBackend(ctx, forceLoadStream = true)
-                                            refresh()
+                                            viewModel.refresh()
                                         }
                                     }
                                     return@get
@@ -1039,15 +657,11 @@ fun NowPlayingScreen() {
 
                 Spacer(Modifier.height(8.dp))
 
-                if (loading) {
+                if (state.loading) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                } else if (
-                    status.startsWith("Error") ||
-                    status.startsWith("Failed") ||
-                    status.startsWith("Not logged")
-                ) {
+                } else if (state.error != null) {
                     Text(
-                        status,
+                        state.error.orEmpty(),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                         textAlign = TextAlign.Center,
