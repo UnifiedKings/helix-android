@@ -3,21 +3,16 @@ package com.example.helixapp.playback
 import android.content.Context
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
-import com.example.helixapp.HelixClient
-import com.example.helixapp.HelixHttpException
 import com.example.helixapp.HelixPrefs
 import com.example.helixapp.HistoryItemUi
+import com.example.helixapp.HistoryPage
+import com.example.helixapp.data.HelixLibraryRepository
+import com.example.helixapp.data.HelixPlaylistRepository
+import com.example.helixapp.data.HelixStationRepository
 import com.example.helixapp.PlaylistUi
 import com.example.helixapp.StationUi
-import com.example.helixapp.parsePlaylists
-import com.example.helixapp.parseStations
 import com.example.helixapp.SearchSong
 import com.example.helixapp.helix.HelixTrackRequests
-import com.example.helixapp.parseHistoryPage
-import com.example.helixapp.parseSongs
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import retrofit2.Response
 
 /**
  * The browse tree Android Auto (and other media browsers) shows for Helix:
@@ -59,9 +54,9 @@ object HelixLibraryBrowser {
     suspend fun children(ctx: Context, parentId: String): List<MediaItem> = when (parentId) {
         ROOT_ID -> topLevel()
         QUEUE_ID -> queueItems(ctx)
-        STATIONS_ID -> stationItems(ctx, parseStations(fetch(ctx) { it.listStations() }))
-        PLAYLISTS_ID -> playlistItems(parsePlaylists(fetch(ctx) { it.listPlaylists() }))
-        RECENT_ID -> recentItems(fetch(ctx) { it.history(limit = RECENT_LIMIT) })
+        STATIONS_ID -> stationItems(ctx, HelixStationRepository(ctx).list())
+        PLAYLISTS_ID -> playlistItems(HelixPlaylistRepository(ctx).list())
+        RECENT_ID -> recentItems(HelixLibraryRepository(ctx).history(event = null, offset = 0, limit = RECENT_LIMIT))
         else -> emptyList()
     }
 
@@ -102,13 +97,13 @@ object HelixLibraryBrowser {
     suspend fun search(ctx: Context, query: String): List<MediaItem> {
         val q = VoiceSearch.normalize(query)
         if (q.isBlank()) return emptyList()
-        val named = (playlistItems(parsePlaylists(fetch(ctx) { it.listPlaylists() })) + stationItems(ctx, parseStations(fetch(ctx) { it.listStations() })))
+        val named = (playlistItems(HelixPlaylistRepository(ctx).list()) + stationItems(ctx, HelixStationRepository(ctx).list()))
             .filter { VoiceSearch.normalize(it.mediaMetadata.title.toString()).contains(q) }
-        return named + songItems(ctx, fetch(ctx) { it.ytmusicSearch(query, songLimit = 15, albumLimit = 1) })
+        return named + songItems(ctx, HelixLibraryRepository(ctx).search(query).songs)
     }
 
-    internal fun songItems(ctx: Context?, json: String): List<MediaItem> =
-        parseSongs(json).filter { it.videoId.isNotBlank() || it.subsonicSongId.isNotBlank() }.map { song ->
+    internal fun songItems(ctx: Context?, songs: List<SearchSong>): List<MediaItem> =
+        songs.filter { it.videoId.isNotBlank() || it.subsonicSongId.isNotBlank() }.map { song ->
             val key = song.videoId.ifBlank { "subsonic-${song.subsonicSongId}" }
             songsById[key] = song
             val subtitle = listOf(song.artist, song.album).filter { it.isNotBlank() }.joinToString(" • ")
@@ -138,19 +133,12 @@ object HelixLibraryBrowser {
             playable("playlist:${p.playId}", p.name.ifBlank { "Playlist" }, if (count == 1) "1 song" else "$count songs", null)
         }
 
-    internal fun recentItems(json: String): List<MediaItem> =
-        parseHistoryPage(json).items.map { h ->
+    internal fun recentItems(page: HistoryPage): List<MediaItem> =
+        page.items.map { h ->
             val key = h.id.ifBlank { "${h.playedAtMs}-${h.title}" }
             recentById[key] = h
             playable("recent:$key", h.title, h.artist, null)
         }
-
-    private suspend fun fetch(ctx: Context, call: suspend (com.example.helixapp.HelixApi) -> Response<String>): String {
-        val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-        val resp = withContext(Dispatchers.IO) { call(api) }
-        if (!resp.isSuccessful) throw HelixHttpException(resp.code())
-        return resp.body().orEmpty()
-    }
 
     private fun artUrl(base: String, url: String?): String? =
         url?.takeIf { it.isNotBlank() }?.let { com.example.helixapp.HelixImages.absoluteUrl(base, it) }

@@ -1,5 +1,6 @@
 package com.example.helixapp.playback
 
+import com.example.helixapp.parseHistoryPage
 import com.example.helixapp.parsePlaylists
 import com.example.helixapp.parseStations
 import org.junit.Assert.assertEquals
@@ -46,12 +47,12 @@ class HelixLibraryBrowserTest {
 
     @Test
     fun recentItemsUseHistoryIds() {
-        val items = HelixLibraryBrowser.recentItems(
+        val items = HelixLibraryBrowser.recentItems(parseHistoryPage(
             """{"has_more": false, "items": [
                 {"id": "h1", "title": "Forever", "artist": "Jessie Murph", "event": "completed",
                  "created_at": "2026-10-05T06:28:54Z", "yt_video_id": "abc"}
-            ]}""",
-        )
+            ]}"""
+        ))
         val item = items.single()
         assertEquals("recent:h1", item.mediaId)
         assertEquals("Forever", item.mediaMetadata.title)
@@ -62,7 +63,7 @@ class HelixLibraryBrowserTest {
     fun emptyListsAreFine() {
         assertTrue(HelixLibraryBrowser.stationItems(null, emptyList()).isEmpty())
         assertTrue(HelixLibraryBrowser.playlistItems(emptyList()).isEmpty())
-        assertFalse(HelixLibraryBrowser.recentItems("""{"items": []}""").isNotEmpty())
+        assertFalse(HelixLibraryBrowser.recentItems(parseHistoryPage("""{"items": []}""")).isNotEmpty())
     }
 
     @Test

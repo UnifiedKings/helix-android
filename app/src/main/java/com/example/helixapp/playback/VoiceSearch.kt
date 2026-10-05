@@ -4,19 +4,14 @@ import android.content.Context
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
-import com.example.helixapp.HelixClient
-import com.example.helixapp.HelixHttpException
 import com.example.helixapp.HelixPrefs
 import com.example.helixapp.SearchSong
 import com.example.helixapp.helix.HelixTrackRequests
-import com.example.helixapp.parseAlbums
-import com.example.helixapp.parseArtists
-import com.example.helixapp.parsePlaylists
-import com.example.helixapp.parsePopularTracks
-import com.example.helixapp.parseStations
-import com.example.helixapp.parseSongs
 import android.widget.Toast
 import com.example.helixapp.toUserMessage
+import com.example.helixapp.data.HelixLibraryRepository
+import com.example.helixapp.data.HelixPlaylistRepository
+import com.example.helixapp.data.HelixStationRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -26,11 +21,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
-import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
-import retrofit2.Response
 
 /**
  * "Play X on Helix" from Google Assistant / Gemini, Android Auto's voice button, or any app
@@ -222,15 +213,7 @@ object VoiceSearch {
         val artist = searchArtists(ctx, seed).firstOrNull()?.name?.takeIf { it.isNotBlank() } ?: seed
         if (playStation(ctx, artist)) return
         val name = "$artist Radio"
-        val body = JSONObject()
-            .put("name", name)
-            .put("seed_type", "artist")
-            .put("seed_title", "")
-            .put("seed_artist", artist)
-            .put("discovery", 0.35)
-            .put("seed_influence", 0.75)
-        val created = call(ctx) { it.createStation(body.toString().toRequestBody(JSON)) }
-        val id = runCatching { JSONObject(created).optString("id") }.getOrNull()?.takeIf { it.isNotBlank() }
+        val id = HelixStationRepository(ctx).createArtistStation(artist).ifBlank { null }
             ?: matchName(name, stations(ctx))
             ?: throw NotFoundException(seed)
         Log.i("HELIX_PLAYER", "Voice search created station $name")
@@ -238,7 +221,7 @@ object VoiceSearch {
     }
 
     private suspend fun playAlbum(ctx: Context, query: String): Boolean {
-        val album = parseAlbums(call(ctx) { it.ytmusicSearch(query, songLimit = 1, albumLimit = 1) })
+        val album = HelixLibraryRepository(ctx).search(query).albums
             .firstOrNull { it.browseId.isNotBlank() } ?: return false
         PlaybackActions.playAlbum(ctx, HelixTrackRequests.playOrQueueBodyFromSearchAlbum(HelixPrefs.getBaseUrl(ctx), album))
         return true
@@ -252,7 +235,7 @@ object VoiceSearch {
     private suspend fun playArtist(ctx: Context, name: String, scope: CoroutineScope, exactOnly: Boolean): Boolean {
         val artist = searchArtists(ctx, name).firstOrNull { it.browseId.isNotBlank() } ?: return false
         if (exactOnly && normalize(artist.name) != normalize(name)) return false
-        val tracks = parsePopularTracks(call(ctx) { it.artistPopular(artist.browseId, ARTIST_TRACKS) })
+        val tracks = HelixLibraryRepository(ctx).artistPopular(artist.browseId, ARTIST_TRACKS)
             .filter { it.videoId.isNotBlank() }
         val first = tracks.firstOrNull() ?: return false
         PlaybackActions.playTrack(ctx, trackBody(ctx, first))
@@ -272,28 +255,20 @@ object VoiceSearch {
     }
 
     private suspend fun searchSongs(ctx: Context, query: String): List<SearchSong> =
-        parseSongs(call(ctx) { it.ytmusicSearch(query, songLimit = 5, albumLimit = 1) })
+        HelixLibraryRepository(ctx).search(query).songs
             .filter { it.videoId.isNotBlank() || it.subsonicSongId.isNotBlank() }
 
     private fun trackBody(ctx: Context, song: SearchSong): JSONObject =
         HelixTrackRequests.playOrQueueBodyFromSearchSong(HelixPrefs.getBaseUrl(ctx), song)
 
     private suspend fun searchArtists(ctx: Context, query: String) =
-        parseArtists(call(ctx) { it.ytmusicSearchArtists(query, artistLimit = 3) })
+        HelixLibraryRepository(ctx).searchArtists(query, limit = 3)
 
     /** (id to play, name) of the user's playlists. */
     private suspend fun playlists(ctx: Context): List<Pair<String, String>> =
-        parsePlaylists(call(ctx) { it.listPlaylists() }).filter { it.playId.isNotBlank() }.map { it.playId to it.name }
+        HelixPlaylistRepository(ctx).list().filter { it.playId.isNotBlank() }.map { it.playId to it.name }
 
     private suspend fun stations(ctx: Context): List<Pair<String, String>> =
-        parseStations(call(ctx) { it.listStations() }).filter { it.id.isNotBlank() }.map { it.id to it.name }
+        HelixStationRepository(ctx).list().filter { it.id.isNotBlank() }.map { it.id to it.name }
 
-    private suspend fun call(ctx: Context, request: suspend (com.example.helixapp.HelixApi) -> Response<String>): String {
-        val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-        val resp = withContext(Dispatchers.IO) { request(api) }
-        if (!resp.isSuccessful) throw HelixHttpException(resp.code())
-        return resp.body().orEmpty()
-    }
-
-    private val JSON = "application/json; charset=utf-8".toMediaType()
 }
