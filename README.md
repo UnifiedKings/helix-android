@@ -159,6 +159,10 @@ Open the project in Android Studio, allow Gradle to sync, then select an Android
 
 The version lives in one place: `appVersion` at the top of `app/build.gradle.kts`. Bump it for each GitHub release (for example `0.2.0` → `0.2.1`); the `versionCode` Android uses for upgrades is derived from it. Settings → App shows the installed version, with a `-debug` suffix on debug builds.
 
+Release builds are signed with a key kept outside the repo. The build reads `~/.helix-signing/signing.properties` (or the file named by the `HELIX_SIGNING_PROPERTIES` environment variable) with `storeFile`, `storePassword`, `keyAlias` and `keyPassword`; without it, `assembleRelease` produces an unsigned APK. Keep the key backed up: releases signed with a different key can't be installed over earlier ones.
+
+To release: bump `appVersion`, add the changes to `CHANGELOG.md`, run `./gradlew assembleRelease`, and upload `app/build/outputs/apk/release/app-release.apk` (renamed to `helix-<version>.apk`) to a GitHub release with the changelog section as its description.
+
 ## Technology
 
 - Kotlin

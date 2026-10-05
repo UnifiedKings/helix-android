@@ -1,8 +1,19 @@
+import java.util.Properties
+
 // The app version: bump this for each GitHub release. versionCode is derived from it
 // (major * 10000 + minor * 100 + patch), so it always increases with the name.
 val appVersion = "0.2.0"
 val appVersionCode = appVersion.split(".").map(String::toInt).let { (major, minor, patch) ->
     major * 10_000 + minor * 100 + patch
+}
+
+// Release signing: read from a properties file kept outside the repo (storeFile,
+// storePassword, keyAlias, keyPassword). Without it, release builds are simply unsigned.
+val signingProperties = Properties().apply {
+    val path = System.getenv("HELIX_SIGNING_PROPERTIES")
+        ?: "${System.getProperty("user.home")}/.helix-signing/signing.properties"
+    val file = File(path)
+    if (file.isFile) file.inputStream().use { load(it) }
 }
 
 plugins {
@@ -29,12 +40,24 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (signingProperties.getProperty("storeFile") != null) {
+            create("release") {
+                storeFile = File(signingProperties.getProperty("storeFile"))
+                storePassword = signingProperties.getProperty("storePassword")
+                keyAlias = signingProperties.getProperty("keyAlias")
+                keyPassword = signingProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             // Settings shows e.g. "0.2.0-debug", so a debug install is easy to tell apart.
             versionNameSuffix = "-debug"
         }
         release {
+            signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
