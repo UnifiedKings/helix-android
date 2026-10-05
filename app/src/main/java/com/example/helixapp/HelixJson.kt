@@ -361,7 +361,7 @@ internal fun parsePlaylists(json: String): List<PlaylistUi> {
     return out
 }
 
-internal fun parsePlaylistDetail(json: String): PlaylistDetailParsed {
+internal fun parsePlaylistDetail(json: String): PlaylistDetail {
     val root = JSONObject(json)
     val pl = root.optJSONObject("playlist") ?: JSONObject()
     val name = pl.optString("name", "Playlist")
@@ -390,7 +390,7 @@ internal fun parsePlaylistDetail(json: String): PlaylistDetailParsed {
         )
     }
 
-    return PlaylistDetailParsed(
+    return PlaylistDetail(
         name = name,
         thumbnailUrl = thumb,
         systemKey = systemKey,

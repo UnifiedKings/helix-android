@@ -46,6 +46,11 @@ class PlaylistsViewModelTest {
             failWith?.let { throw it }
             playlists.removeAll { it.id == playlistId }
         }
+
+        override suspend fun detail(playlistId: String): PlaylistDetail = throw UnsupportedOperationException()
+        override suspend fun reorderTracks(playlistId: String, trackIds: List<String>): PlaylistDetail = throw UnsupportedOperationException()
+        override suspend fun removeTrack(playlistId: String, trackId: String) = throw UnsupportedOperationException()
+        override suspend fun addTrack(playlistId: String, song: SearchSong) = throw UnsupportedOperationException()
     }
 
     private var now = 1_000_000L

@@ -110,7 +110,7 @@ data class PlaylistTrackUi(
     val mbArtistId: String,
 )
 
-data class PlaylistDetailParsed(
+data class PlaylistDetail(
     val name: String,
     val thumbnailUrl: String,
     val systemKey: String,
