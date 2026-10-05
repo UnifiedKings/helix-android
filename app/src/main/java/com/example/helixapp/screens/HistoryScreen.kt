@@ -23,7 +23,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,9 +36,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.helixapp.helix.HelixTrackRequests
 import com.example.helixapp.playback.PlaybackActions
@@ -52,66 +50,19 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
-private const val HISTORY_PAGE_SIZE = 50
-
-private enum class HistoryFilter(val label: String, val event: String?) {
-    All("All", null),
-    Played("Played", "completed"),
-    Skipped("Skipped", "skipped"),
-}
-
 @Composable
-fun HistoryScreen(onNavigateToNowPlaying: () -> Unit = {}) {
+fun HistoryScreen(
+    onNavigateToNowPlaying: () -> Unit = {},
+    viewModel: HistoryViewModel = helixViewModel(::HistoryViewModel),
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-
-    var filter by remember { mutableStateOf(HistoryFilter.All) }
-    var items by remember { mutableStateOf(emptyList<HistoryItemUi>()) }
-    var hasMore by remember { mutableStateOf(false) }
-    var loading by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var lastRefreshMs by remember { mutableStateOf(0L) }
-    var loadJob by remember { mutableStateOf<Job?>(null) }
-
-    /** Load the first page (replacing the list), or the next page when [append]. */
-    fun load(append: Boolean = false) {
-        if (HelixPrefs.getSessionToken(ctx).isNullOrBlank()) {
-            error = "Log in from Settings to see your listening history."
-            items = emptyList()
-            return
-        }
-        val forFilter = filter
-        val offset = if (append) items.size else 0
-        if (!append) lastRefreshMs = System.currentTimeMillis()
-        loadJob?.cancel()
-        loading = true
-        loadJob = scope.launch {
-            try {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val resp = withContext(Dispatchers.IO) {
-                    api.history(event = forFilter.event, limit = HISTORY_PAGE_SIZE, offset = offset)
-                }
-                if (!resp.isSuccessful) throw HelixHttpException(resp.code())
-                val page = parseHistoryPage(resp.body().orEmpty())
-                items = if (append) items + page.items else page.items
-                hasMore = page.hasMore
-                error = null
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                error = e.toUserMessage("Loading history")
-            } finally {
-                if (forFilter == filter) loading = false
-            }
-        }
-    }
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val filter = state.filter
+    val items = state.items
+    val loading = state.loading
 
     fun playAgain(item: HistoryItemUi) {
         scope.launchPlaybackAction(
@@ -135,20 +86,11 @@ fun HistoryScreen(onNavigateToNowPlaying: () -> Unit = {}) {
         }
     }
 
-    LaunchedEffect(filter) { load() }
-
-    // Coming back to the app after a while: refresh, since more has been played meanwhile.
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME &&
-                System.currentTimeMillis() - lastRefreshMs > 30_000L && !loading
-            ) {
-                load()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    // Coming back to the tab or the app after a while: refresh, since more has been played.
+    LaunchedEffect(Unit) { viewModel.refreshIfStale() }
+    LifecycleResumeEffect(viewModel) {
+        viewModel.refreshIfStale()
+        onPauseOrDispose {}
     }
 
     Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -156,7 +98,7 @@ fun HistoryScreen(onNavigateToNowPlaying: () -> Unit = {}) {
             HistoryFilter.entries.forEach { f ->
                 FilterChip(
                     selected = filter == f,
-                    onClick = { filter = f },
+                    onClick = { viewModel.setFilter(f) },
                     label = { Text(f.label) },
                     colors = FilterChipDefaults.filterChipColors(
                         selectedContainerColor = HelixAccent.copy(alpha = 0.18f),
@@ -169,7 +111,7 @@ fun HistoryScreen(onNavigateToNowPlaying: () -> Unit = {}) {
             }
         }
 
-        val message = error
+        val message = state.error
         if (message != null && items.isEmpty()) {
             Text(message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
         } else if (items.isEmpty() && !loading) {
@@ -211,10 +153,10 @@ fun HistoryScreen(onNavigateToNowPlaying: () -> Unit = {}) {
                     )
                 }
             }
-            if (hasMore) {
+            if (state.hasMore) {
                 item(key = "load-more") {
                     Box(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp), contentAlignment = Alignment.Center) {
-                        HelixTextButton(onClick = { load(append = true) }, enabled = !loading) {
+                        HelixTextButton(onClick = viewModel::loadMore, enabled = !loading) {
                             Text("Load more")
                         }
                     }
