@@ -3,6 +3,8 @@ package com.example.helixapp.data
 import android.content.Context
 import com.example.helixapp.parseLikedSongs
 import com.example.helixapp.parseRatingFlag
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 
 /** A song as the like/dislike endpoints identify it. */
@@ -37,7 +39,7 @@ class HelixRatingRepository(context: Context) : RatingRepository {
         val title = track.title.trim()
         val artist = track.artist.trim()
         if (title.isBlank() || artist.isBlank()) return false
-        val liked = runCatching { parseLikedSongs(helixCall(ctx) { it.likesList() }) }.getOrDefault(emptyList())
+        val liked = runCatching { likedSongs.get { parseLikedSongs(helixCall(ctx) { it.likesList() }) } }.getOrDefault(emptyList())
         return liked.any { (t, a) -> t.trim().equals(title, ignoreCase = true) && a.trim().equals(artist, ignoreCase = true) }
     }
 
@@ -61,10 +63,13 @@ class HelixRatingRepository(context: Context) : RatingRepository {
 
     override suspend fun toggleLike(track: RatedTrack) {
         helixCall(ctx) { it.likesToggle(track.toJson().toJsonBody()) }
+        likedSongs.invalidate()
     }
 
     override suspend fun toggleDislike(track: RatedTrack) {
         helixCall(ctx) { it.dislikesToggle(track.toJson().toJsonBody()) }
+        // Disliking a liked song unlikes it.
+        likedSongs.invalidate()
     }
 
     private fun RatedTrack.toJson() = JSONObject()
@@ -78,7 +83,31 @@ class HelixRatingRepository(context: Context) : RatingRepository {
         .put("subsonic_song_id", subsonicSongId)
 
     private companion object {
+        /** Shared by every screen: the title/artist fallback no longer downloads the list per track. */
+        val likedSongs = TimedCache<List<Pair<String, String>>>(ttlMs = 10 * 60_000L)
+
         val LIKED_KEYS = listOf("liked", "is_liked", "isLiked")
         val DISLIKED_KEYS = listOf("disliked", "is_disliked", "isDisliked")
     }
+}
+
+/**
+ * Holds one value for [ttlMs]; [get] loads it when missing or stale, one load at a time.
+ * A failed load isn't cached, so the next call tries again.
+ */
+class TimedCache<T>(private val ttlMs: Long, private val clock: () -> Long = System::currentTimeMillis) {
+    private val mutex = Mutex()
+    private var value: T? = null
+    private var loadedAt = 0L
+
+    suspend fun get(load: suspend () -> T): T = mutex.withLock {
+        val cached = value
+        if (cached != null && clock() - loadedAt < ttlMs) return cached
+        load().also {
+            value = it
+            loadedAt = clock()
+        }
+    }
+
+    suspend fun invalidate() = mutex.withLock { value = null }
 }
