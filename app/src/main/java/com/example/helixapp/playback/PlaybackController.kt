@@ -47,8 +47,13 @@ object PlaybackController {
 
         var future = controllerFuture
         if (future == null) {
-            val token = SessionToken(ctx, ComponentName(ctx, PlaybackService::class.java))
-            future = MediaController.Builder(ctx, token).buildAsync()
+            // Bind with the application context. Callers often pass an Activity (a screen's
+            // LocalContext); Android force-unbinds an Activity's connections when it's destroyed
+            // (e.g. the app is swiped away), and the later release() then crashed with
+            // "Service not registered".
+            val appCtx = ctx.applicationContext
+            val token = SessionToken(appCtx, ComponentName(appCtx, PlaybackService::class.java))
+            future = MediaController.Builder(appCtx, token).buildAsync()
             controllerFuture = future
         }
 
