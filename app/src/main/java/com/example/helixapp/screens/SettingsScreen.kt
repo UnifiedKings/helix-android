@@ -15,6 +15,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,6 +42,7 @@ fun SettingsScreen(
     val ctx = LocalContext.current
     val username = HelixPrefs.getUsername(ctx).orEmpty()
     val connected = !HelixPrefs.getSessionToken(ctx).isNullOrBlank()
+    val sessionExpired by AuthState.sessionExpired.collectAsState()
     val host = HelixPrefs.getBaseUrl(ctx)
     var role by remember { mutableStateOf<String?>(null) }
 
@@ -78,7 +80,11 @@ fun SettingsScreen(
             SettingsRow(
                 title = if (connected && username.isNotBlank()) username else "Connection",
                 subtitle = if (connected) host else "Connect this app to your Helix server",
-                value = if (connected) "Connected" else null,
+                value = when {
+                    connected && sessionExpired -> "Session expired"
+                    connected -> "Connected"
+                    else -> null
+                },
                 onClick = onOpenConnection,
             )
         }

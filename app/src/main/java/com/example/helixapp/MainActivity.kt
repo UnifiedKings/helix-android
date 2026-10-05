@@ -5,9 +5,11 @@ import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Search
@@ -25,9 +27,11 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -86,6 +90,28 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@Composable
+private fun SessionExpiredBanner(onLogIn: () -> Unit) {
+    Surface(color = HelixSurface) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                // The app draws edge to edge; a Scaffold topBar must clear the status bar itself.
+                .statusBarsPadding()
+                .padding(start = 18.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Your Helix session expired. Log in again to keep listening.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.weight(1f),
+            )
+            HelixTextButton(onClick = onLogIn) { Text("Log in", color = HelixAccent) }
+        }
+    }
+}
+
 private sealed class TabDest(
     val route: String,
     val label: String,
@@ -140,6 +166,7 @@ private fun HelixApp(openNowPlayingSignal: Int) {
         navigateToTab(TabDest.NowPlaying)
     }
 
+    val sessionExpired by AuthState.sessionExpired.collectAsState()
     val messageHost = remember { SnackbarHostState() }
     LaunchedEffect(Unit) {
         UserMessages.messages.collect { messageHost.showSnackbar(it) }
@@ -149,6 +176,12 @@ private fun HelixApp(openNowPlayingSignal: Int) {
         Scaffold(
             containerColor = HelixBackground,
             snackbarHost = { SnackbarHost(messageHost) },
+            topBar = {
+                // Stays up until the user logs in again (not on the login screen itself).
+                if (sessionExpired && currentRoute != "settings/connection") {
+                    SessionExpiredBanner(onLogIn = { nav.navigate("settings/connection") })
+                }
+            },
             bottomBar = {
                 if (isTabRoute(currentRoute)) {
                     Surface(color = HelixSurface) {

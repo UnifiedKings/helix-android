@@ -18,6 +18,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -50,8 +51,13 @@ fun ConnectionSettingsScreen(onBack: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var connected by remember { mutableStateOf(!HelixPrefs.getSessionToken(ctx).isNullOrBlank()) }
 
+    val sessionExpired by AuthState.sessionExpired.collectAsState()
     LaunchedEffect(Unit) {
-        status = if (connected) "Connected to Helix" else "Not connected"
+        status = when {
+            connected && sessionExpired -> "Session expired. Enter your password and tap Connect."
+            connected -> "Connected to Helix"
+            else -> "Not connected"
+        }
     }
 
     Column(
@@ -70,7 +76,11 @@ fun ConnectionSettingsScreen(onBack: () -> Unit) {
                 Text(
                     status,
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = when {
+                        connected && sessionExpired -> MaterialTheme.colorScheme.error
+                        connected -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 )
             }
         }

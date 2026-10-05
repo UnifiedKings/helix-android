@@ -2,6 +2,7 @@ package com.example.helixapp.prefs
 
 import android.content.Context
 import android.content.Intent
+import com.example.helixapp.AuthState
 import com.example.helixapp.HelixPrefs
 import com.example.helixapp.playback.PlaybackService
 import com.example.helixapp.playback.PlayerStateStore
@@ -14,6 +15,7 @@ object AppPrefs {
 
     fun saveSessionCookie(ctx: Context, cookie: String) {
         HelixPrefs.setSessionToken(ctx, cookie)
+        AuthState.clear()
 
         // If playback is already running, refresh stream headers immediately.
         runCatching {
@@ -26,6 +28,8 @@ object AppPrefs {
     fun clearSession(ctx: Context) {
         HelixPrefs.clearAuth(ctx)
         PlayerStateStore.clear()
+        // Logged out on purpose: no longer "expired".
+        AuthState.clear()
 
         // Best effort: clear auth headers in the playback service too.
         runCatching {

@@ -2,6 +2,7 @@ package com.example.helixapp.playback
 
 import android.content.Context
 import android.util.Log
+import com.example.helixapp.AuthState
 import com.example.helixapp.HelixPrefs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -170,6 +171,13 @@ object PlayerRealtime {
             scheduleReconnect()
             return
         }
+        if (AuthState.sessionExpired.value) {
+            // The server rejects this session; retrying would only fail again. Logging in
+            // saves a new token, which changes the connection key and reconnects.
+            activeConnectionKey = connectionKey(ctx)
+            Log.d(TAG, "Session expired; not connecting until the user logs in again")
+            return
+        }
 
         val socketBase = when {
             baseUrl.startsWith("https://", ignoreCase = true) -> "wss://" + baseUrl.substringAfter("://")
@@ -219,6 +227,7 @@ object PlayerRealtime {
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (socket !== webSocket) return
                 Log.w(TAG, "Player websocket failed", t)
+                if (response?.code == 401) AuthState.markExpired("realtime socket")
                 socketOpen = false
                 pingJob?.cancel()
                 pingJob = null
@@ -323,7 +332,7 @@ object PlayerRealtime {
 
     @Synchronized
     private fun scheduleReconnect() {
-        if (!started || !isNeeded() || reconnectJob?.isActive == true) return
+        if (!started || !isNeeded() || AuthState.sessionExpired.value || reconnectJob?.isActive == true) return
         reconnectJob = scope.launch {
             val delayMs = (RECONNECT_DELAY_MS * (1 shl minOf(reconnectAttempts, 6)))
                 .coerceAtMost(30_000L)

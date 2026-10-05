@@ -42,6 +42,12 @@ android {
     buildFeatures {
         compose = true
     }
+
+    testOptions {
+        // Android framework calls (e.g. android.util.Log) are stubs on the JVM; let them return
+        // defaults instead of throwing so logic that also logs can be unit tested.
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {

@@ -20,12 +20,14 @@ import androidx.media3.common.Player
 import androidx.media3.datasource.DataSourceBitmapLoader
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.CacheBitmapLoader
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import com.example.helixapp.AuthState
 import com.example.helixapp.HelixClient
 import com.example.helixapp.HelixPrefs
 import com.example.helixapp.MainActivity
@@ -299,6 +301,17 @@ class PlaybackService : MediaSessionService() {
                     "ExoPlayer error=${error.errorCodeName} uri=$uri",
                     error
                 )
+
+                val httpStatus = generateSequence(error.cause) { it.cause }
+                    .filterIsInstance<HttpDataSource.InvalidResponseCodeException>()
+                    .firstOrNull()
+                    ?.responseCode
+                if (httpStatus == 401 && uri.contains("/api/stream/")) {
+                    // The stream rejected the session cookie; retrying can't help until login.
+                    AuthState.markExpired("stream")
+                    endHandoff("session expired")
+                    return
+                }
 
                 if (shouldRetryTemporaryStreamError(error, uri)) {
                     if (lastStreamErrorUri != uri) {

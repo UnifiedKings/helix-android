@@ -48,14 +48,19 @@ object HelixClient {
     private fun authCookieInterceptor(context: Context): Interceptor {
         return Interceptor { chain ->
             val token = HelixPrefs.getSessionToken(context)
-            val req = if (!token.isNullOrBlank()) {
+            val sentCookie = !token.isNullOrBlank()
+            val req = if (sentCookie) {
                 chain.request().newBuilder()
                     .header("Cookie", "$COOKIE_NAME=$token")
                     .build()
             } else {
                 chain.request()
             }
-            chain.proceed(req)
+            val resp = chain.proceed(req)
+            if (AuthState.isSessionExpiry(resp.code, req.url.encodedPath, sentCookie)) {
+                AuthState.markExpired("API ${req.url.encodedPath}")
+            }
+            resp
         }
     }
 
