@@ -356,6 +356,12 @@ fun PlaylistDetailScreen(
         }
     }
 
+    fun playNextTrack(track: PlaylistTrackUi) {
+        scope.launchPlaybackAction(failureAction = "Play next", successMessage = "Playing next: ${track.title}") {
+            PlaybackActions.playNext(ctx, trackPayload(track))
+        }
+    }
+
     fun playTrackNow(track: PlaylistTrackUi) {
         scope.launchPlaybackAction(
             failureAction = "Play",
@@ -621,6 +627,10 @@ fun PlaylistDetailScreen(
                         onPlay = {
                             rowMenuTrack = null
                             playTrackNow(track)
+                        },
+                        onPlayNext = {
+                            rowMenuTrack = null
+                            playNextTrack(track)
                         },
                         onQueue = {
                             rowMenuTrack = null
@@ -1635,6 +1645,7 @@ private fun PlaylistTrackRow(
     onOpenMenu: () -> Unit,
     onDismissMenu: () -> Unit,
     onPlay: () -> Unit,
+    onPlayNext: () -> Unit,
     onQueue: () -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -1671,6 +1682,10 @@ private fun PlaylistTrackRow(
                     DropdownMenuItem(
                         text = { Text("Play now") },
                         onClick = onPlay,
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Play next") },
+                        onClick = onPlayNext,
                     )
                     DropdownMenuItem(
                         text = { Text("Add to queue") },

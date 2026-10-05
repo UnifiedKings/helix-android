@@ -147,6 +147,12 @@ fun HistoryScreen(onNavigateToNowPlaying: () -> Unit = {}) {
         }
     }
 
+    fun playNext(item: HistoryItemUi) {
+        scope.launchPlaybackAction(failureAction = "Play next", successMessage = "Playing next: ${item.title}") {
+            PlaybackActions.playNext(ctx, item.toTrackRequest())
+        }
+    }
+
     fun queue(item: HistoryItemUi) {
         scope.launchPlaybackAction(failureAction = "Queue", successMessage = "Queued: ${item.title}") {
             PlaybackActions.queueTrack(ctx, item.toTrackRequest())
@@ -217,6 +223,7 @@ fun HistoryScreen(onNavigateToNowPlaying: () -> Unit = {}) {
                     HistoryRow(
                         item = item,
                         onPlay = { playAgain(item) },
+                        onPlayNext = { playNext(item) },
                         onQueue = { queue(item) },
                     )
                     Box(
@@ -247,7 +254,7 @@ fun HistoryScreen(onNavigateToNowPlaying: () -> Unit = {}) {
 }
 
 @Composable
-private fun HistoryRow(item: HistoryItemUi, onPlay: () -> Unit, onQueue: () -> Unit) {
+private fun HistoryRow(item: HistoryItemUi, onPlay: () -> Unit, onPlayNext: () -> Unit, onQueue: () -> Unit) {
     val ctx = LocalContext.current
     val art = HelixImages.absoluteUrl(HelixPrefs.getBaseUrl(ctx), item.artUrl)
     var menuExpanded by remember(item.id) { mutableStateOf(false) }
@@ -301,6 +308,7 @@ private fun HistoryRow(item: HistoryItemUi, onPlay: () -> Unit, onQueue: () -> U
                 expanded = menuExpanded,
                 onDismissRequest = { menuExpanded = false },
                 onPlay = { menuExpanded = false; onPlay() },
+                onPlayNext = { menuExpanded = false; onPlayNext() },
                 onAddToQueue = { menuExpanded = false; onQueue() },
                 onAddToSubsonic = {},
                 showAddToSubsonic = false,

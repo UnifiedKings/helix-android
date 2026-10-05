@@ -2,8 +2,11 @@ package com.example.helixapp.playback
 
 import android.content.Context
 import android.os.SystemClock
+import android.util.Log
+import com.example.helixapp.HelixApi
 import com.example.helixapp.HelixClient
 import com.example.helixapp.HelixHttpException
+import com.example.helixapp.HelixPartialException
 import com.example.helixapp.HelixPrefs
 import com.example.helixapp.HelixTimeoutException
 import com.example.helixapp.showLoadingOverlay
@@ -13,8 +16,10 @@ import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.json.JSONArray
 import org.json.JSONObject
+import retrofit2.Response
 
 /**
  * The playback and queue actions screens can trigger.
@@ -60,6 +65,111 @@ object PlaybackActions {
         val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
         val resp = withContext(Dispatchers.IO) { api.queueAppendAlbum(album.toBody()) }
         if (!resp.isSuccessful) throw HelixHttpException(resp.code())
+    }
+
+    /**
+     * Add a song so it plays right after the current one. The server has no "insert next"
+     * request (only an account-wide add position), so append it, then move it with a reorder.
+     */
+    suspend fun playNext(ctx: Context, track: JSONObject) {
+        val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
+        val beforeIds = fetchQueue(api).second.map { it.queueItemId }.toSet()
+
+        val resp = withContext(Dispatchers.IO) { api.queueAppendTrack(track.toBody()) }
+        if (!resp.isSuccessful) throw HelixHttpException(resp.code())
+        val body = resp.body().orEmpty()
+        PlayerStateStore.publish(body)
+
+        val (now, items) = HelixTransport.parseQueueFromState(body)
+        val ids = items.map { it.queueItemId }
+        val addedId = ids.firstOrNull { it !in beforeIds } ?: return
+        val ordered = orderWithPlayNext(ids, now?.queueItemId, addedId)
+        if (ordered != ids) {
+            try {
+                reorder(api, ordered)
+            } catch (e: Exception) {
+                throw HelixPartialException("Added to the end of the queue, but couldn't move it up to play next.", e)
+            }
+        }
+    }
+
+    /** Move a song that's already in the queue so it plays right after the current one. */
+    suspend fun moveToNext(ctx: Context, queueItemId: String) {
+        val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
+        val (now, items) = fetchQueue(api)
+        val ids = items.map { it.queueItemId }
+        val ordered = orderWithPlayNext(ids, now?.queueItemId, queueItemId)
+        if (ordered != ids) reorder(api, ordered)
+    }
+
+    /**
+     * Remove a song from the queue. Removing the song that's playing makes the server skip to
+     * the next one, so that goes through the coordinator like any other change of track.
+     */
+    suspend fun removeFromQueue(ctx: Context, queueItemId: String, isCurrent: Boolean) {
+        if (isCurrent) {
+            PlayerCommandCoordinator.changePlayback(ctx, forceLoadStream = true) { api ->
+                if (deleteQueueItem(api, queueItemId)) Response.success("") else Response.error(500, "".toResponseBody())
+            }
+            return
+        }
+        val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
+        if (!deleteQueueItem(api, queueItemId)) throw HelixHttpException(500)
+        PlayerStateStore.refresh(ctx)
+    }
+
+    /**
+     * Delete one queue item; true when it's gone. The server can answer 500 after it has
+     * already deleted the item (renumbering the remaining positions can trip its unique
+     * position constraint), so on an error check whether the item is actually still queued.
+     */
+    private suspend fun deleteQueueItem(api: HelixApi, queueItemId: String): Boolean {
+        val resp = withContext(Dispatchers.IO) { api.queueRemoveItem(queueItemId) }
+        if (resp.isSuccessful || resp.code() == 404) return true
+        val stillQueued = fetchQueue(api).second.any { it.queueItemId == queueItemId }
+        if (!stillQueued) Log.w("HELIX_PLAYER", "Remove answered HTTP ${resp.code()} but the item is gone; treating as removed")
+        return !stillQueued
+    }
+
+    /**
+     * Clear the queue but keep the current song playing. The server's own clear also removes
+     * the current song and ends the station, so remove the other songs one at a time instead.
+     */
+    suspend fun clearQueueKeepingCurrent(ctx: Context) {
+        val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
+        val (now, items) = fetchQueue(api)
+        items.map { it.queueItemId }
+            .filter { it != now?.queueItemId }
+            .forEach { id ->
+                if (!deleteQueueItem(api, id)) throw HelixHttpException(500)
+            }
+        PlayerStateStore.refresh(ctx)
+    }
+
+    /**
+     * The queue order after moving [moveId] to play right after [currentId]. With no current
+     * song it moves to the front. Pure, for unit tests.
+     */
+    internal fun orderWithPlayNext(ids: List<String>, currentId: String?, moveId: String): List<String> {
+        if (moveId == currentId || moveId !in ids) return ids
+        val rest = ids.filter { it != moveId }
+        val insertAt = currentId?.let { rest.indexOf(it) }?.takeIf { it >= 0 }?.plus(1) ?: 0
+        return rest.subList(0, insertAt) + moveId + rest.subList(insertAt, rest.size)
+    }
+
+    private suspend fun fetchQueue(api: HelixApi): Pair<NowPlayingUi?, List<QueueItemUi>> {
+        val resp = withContext(Dispatchers.IO) { api.playerState() }
+        if (!resp.isSuccessful) throw HelixHttpException(resp.code())
+        val body = resp.body().orEmpty()
+        PlayerStateStore.publish(body)
+        return HelixTransport.parseQueueFromState(body)
+    }
+
+    private suspend fun reorder(api: HelixApi, orderedIds: List<String>) {
+        val body = JSONObject().put("item_ids", JSONArray(orderedIds))
+        val resp = withContext(Dispatchers.IO) { api.reorderQueue(body.toBody()) }
+        if (!resp.isSuccessful) throw HelixHttpException(resp.code())
+        PlayerStateStore.publish(resp.body().orEmpty())
     }
 
     /**

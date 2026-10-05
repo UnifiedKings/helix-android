@@ -241,6 +241,12 @@ fun AlbumScreen(
         }
     }
 
+    fun playNextSingle(track: AlbumTrack) {
+        scope.launchPlaybackAction(failureAction = "Play next", successMessage = "Playing next: ${track.title}") {
+            PlaybackActions.playNext(ctx, trackPayload(track))
+        }
+    }
+
     fun queueSingle(track: AlbumTrack) {
         scope.launchPlaybackAction(failureAction = "Queue", successMessage = "Queued: ${track.title}") {
             PlaybackActions.queueTrack(ctx, trackPayload(track))
@@ -371,6 +377,7 @@ fun AlbumScreen(
                     AlbumTrackRow(
                         track = t,
                         onPlay = { playSingle(t) },
+                        onPlayNext = { playNextSingle(t) },
                         onQueue = { queueSingle(t) },
                         onAddToSubsonic = { addSingleToSubsonic(t) },
                         subsonicAvailable = subsonicSongAvailable["song:" + t.videoId] == true,
@@ -549,6 +556,7 @@ private fun AlbumHero(
 private fun AlbumTrackRow(
     track: AlbumTrack,
     onPlay: () -> Unit,
+    onPlayNext: () -> Unit,
     onQueue: () -> Unit,
     onAddToSubsonic: () -> Unit,
     subsonicAvailable: Boolean,
@@ -604,8 +612,12 @@ private fun AlbumTrackRow(
                             onPlay()
                         }
                     )
+                    PlayNextMenuItem(onClick = {
+                        expanded = false
+                        onPlayNext()
+                    })
                     DropdownMenuItem(
-                        text = { Text("Add to Queue") },
+                        text = { Text("Add to queue") },
                         leadingIcon = { Icon(Icons.Default.QueueMusic, contentDescription = null) },
                         onClick = {
                             expanded = false

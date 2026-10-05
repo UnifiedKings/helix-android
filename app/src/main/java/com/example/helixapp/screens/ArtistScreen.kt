@@ -432,6 +432,15 @@ private fun ArtistPopularRow(
                     expanded = false
                     playSong()
                 },
+                onPlayNext = {
+                    expanded = false
+                    scope.launchPlaybackAction(failureAction = "Play next", successMessage = "Playing next: ${song.title}") {
+                        PlaybackActions.playNext(
+                            ctx,
+                            HelixTrackRequests.playOrQueueBodyFromSearchSong(HelixPrefs.getBaseUrl(ctx), song),
+                        )
+                    }
+                },
                 onAddToQueue = {
                     expanded = false
                     scope.launchPlaybackAction(failureAction = "Queue", successMessage = "Queued: ${song.title}") {

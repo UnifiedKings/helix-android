@@ -7,6 +7,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,9 +20,15 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.RemoveCircleOutline
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -164,6 +171,33 @@ fun QueueScreen() {
         }
     }
 
+    fun playNextInQueue(item: QueueItemUi) {
+        scope.launchPlaybackAction(failureAction = "Move", successMessage = "Playing next: ${item.title}") {
+            PlaybackActions.moveToNext(ctx, item.queueItemId)
+        }
+    }
+
+    fun removeFromQueue(item: QueueItemUi) {
+        val isCurrent = item.queueItemId == nowPlaying?.queueItemId
+        scope.launchPlaybackAction(failureAction = "Remove", successMessage = "Removed: ${item.title}") {
+            PlaybackActions.removeFromQueue(ctx, item.queueItemId, isCurrent)
+        }
+    }
+
+    var confirmClear by remember { mutableStateOf(false) }
+    var clearing by remember { mutableStateOf(false) }
+
+    fun clearQueue() {
+        clearing = true
+        scope.launchPlaybackAction(failureAction = "Clear", successMessage = "Queue cleared") {
+            try {
+                PlaybackActions.clearQueueKeepingCurrent(ctx)
+            } finally {
+                clearing = false
+            }
+        }
+    }
+
     fun startDrag(itemId: String) {
         draggingId = itemId
         dragOffsetY = 0f
@@ -245,16 +279,26 @@ fun QueueScreen() {
                 .fillMaxWidth()
                 .padding(top = 4.dp, bottom = 12.dp),
         ) {
-            Text(
-                text = "Current Queue",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                text = if (queue.size == 1) "1 song" else "${queue.size} songs",
-                style = MaterialTheme.typography.bodyMedium,
-                color = HelixMuted,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Current Queue",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = if (queue.size == 1) "1 song" else "${queue.size} songs",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = HelixMuted,
+                    )
+                }
+                // Clear only makes sense when there's something besides the current song.
+                if (queue.any { it.queueItemId != nowPlaying?.queueItemId }) {
+                    HelixTextButton(onClick = { confirmClear = true }, enabled = !clearing) {
+                        Text(if (clearing) "Clearing…" else "Clear")
+                    }
+                }
+            }
             if (reorderError != null) {
                 Text(
                     text = "Could not save queue order: $reorderError",
@@ -287,12 +331,16 @@ fun QueueScreen() {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxSize(),
             ) {
+                val nowIndex = queue.indexOfFirst { it.queueItemId == nowPlaying?.queueItemId }
                 itemsIndexed(queue, key = { _, item -> item.queueItemId }) { index, item ->
                     ReorderableQueueRow(
                         item = item,
                         displayIndex = index,
                         baseUrl = HelixPrefs.getBaseUrl(ctx),
                         isNowPlaying = nowPlaying?.queueItemId == item.queueItemId,
+                        isNext = nowIndex >= 0 && index == nowIndex + 1,
+                        onPlayNext = { playNextInQueue(item) },
+                        onRemove = { removeFromQueue(item) },
                         isDragging = draggingId == item.queueItemId,
                         dragOffsetY = if (draggingId == item.queueItemId) dragOffsetY else 0f,
                         onJump = { jumpTo(item) },
@@ -305,6 +353,22 @@ fun QueueScreen() {
             }
         }
     }
+
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text("Clear the queue?") },
+            text = { Text("Everything except the song that's playing will be removed.") },
+            confirmButton = {
+                HelixTextButton(onClick = { confirmClear = false; clearQueue() }) {
+                    Text("Clear", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                HelixTextButton(onClick = { confirmClear = false }) { Text("Cancel") }
+            },
+        )
+    }
 }
 
 @Composable
@@ -313,6 +377,9 @@ private fun ReorderableQueueRow(
     displayIndex: Int,
     baseUrl: String,
     isNowPlaying: Boolean,
+    isNext: Boolean,
+    onPlayNext: () -> Unit,
+    onRemove: () -> Unit,
     isDragging: Boolean,
     dragOffsetY: Float,
     onJump: () -> Unit,
@@ -421,6 +488,26 @@ private fun ReorderableQueueRow(
                     style = MaterialTheme.typography.labelMedium,
                     color = HelixMuted,
                 )
+                Box {
+                    var menuExpanded by remember(item.queueItemId) { mutableStateOf(false) }
+                    IconButton(onClick = { menuExpanded = true }, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "Queue options", tint = HelixMuted)
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                        shape = HelixMenuShape,
+                    ) {
+                        if (!isNowPlaying && !isNext) {
+                            PlayNextMenuItem(onClick = { menuExpanded = false; onPlayNext() })
+                        }
+                        DropdownMenuItem(
+                            text = { Text(if (isNowPlaying) "Remove (skips this song)" else "Remove from queue") },
+                            leadingIcon = { Icon(Icons.Default.RemoveCircleOutline, contentDescription = null) },
+                            onClick = { menuExpanded = false; onRemove() },
+                        )
+                    }
+                }
             }
         }
     }

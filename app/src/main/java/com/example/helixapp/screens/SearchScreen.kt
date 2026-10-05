@@ -694,6 +694,17 @@ private fun SongRow(
                         expanded = false
                         playSong()
                     },
+                    onPlayNext = {
+                        expanded = false
+                        scope.launchPlaybackAction(
+                            failureAction = "Play next",
+                            successMessage = "Playing next: ${song.title}",
+                        ) {
+                            val bodyJson = HelixTrackRequests.playOrQueueBodyFromSearchSong(HelixPrefs.getBaseUrl(ctx), song)
+                            PlaybackActions.playNext(ctx, bodyJson)
+                            RecentSearchPlay.addSong(ctx.applicationContext, song)
+                        }
+                    },
                     onAddToQueue = {
                         expanded = false
                         scope.launchPlaybackAction(
