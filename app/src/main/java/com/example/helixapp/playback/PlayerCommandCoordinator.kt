@@ -88,7 +88,7 @@ object PlayerCommandCoordinator {
             val resp = withContext(Dispatchers.IO) { request(api) }
             if (!resp.isSuccessful) throw HelixHttpException(resp.code())
             // The user changed playback from this phone, so they want to hear it here.
-            HelixTransport.markInitialSynced()
+            HelixTransport.allowLocalPlayback()
             HelixTransport.refreshAndSync(context, forceLoadStream = forceLoadStream, forceRestart = forceRestart)
         }
     }
@@ -103,6 +103,9 @@ object PlayerCommandCoordinator {
 
     suspend fun pause(context: Context) {
         mutex.withLock {
+            // A pause on this phone holds it paused until the user presses Play here, even if
+            // another device later marks the shared state playing again.
+            HelixTransport.holdLocalPlayback()
             // Optimistically pause the local player immediately so headset buttons feel responsive
             if (DevicePlayback.isEnabled(context)) PlaybackController.pause(context)
 
@@ -132,8 +135,8 @@ object PlayerCommandCoordinator {
                 // If we fail to tell the backend we resumed (e.g. no network), we might 
                 // encounter playback errors eventually, but we let it try to play locally.
             } else {
-                // Mark first: the sync below must be allowed to play on this phone.
-                HelixTransport.markInitialSynced()
+                // Allow first: the sync below must be able to play on this phone.
+                HelixTransport.allowLocalPlayback()
                 HelixTransport.refreshAndSync(context, forceLoadStream = true)
             }
         }

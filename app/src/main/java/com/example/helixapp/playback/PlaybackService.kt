@@ -81,6 +81,8 @@ class PlaybackService : MediaSessionService() {
             if (intent?.action != AudioManager.ACTION_AUDIO_BECOMING_NOISY) return
 
             Log.i("HELIX_PLAYER", "Audio output disconnected; pausing playback")
+            // Stay paused even if another device advances the queue; don't resume on the speaker.
+            HelixTransport.holdLocalPlayback()
             player.pause()
 
             scope.launch {
@@ -350,7 +352,7 @@ class PlaybackService : MediaSessionService() {
         // alone. This used to pause the backend, which paused every other Helix client's
         // shared state (the web player then showed "Paused" while still playing). Instead,
         // HelixTransport keeps this phone silent until the user asks to listen here (see
-        // HelixTransport.needsInitialSync).
+        // HelixTransport.waitingForLocalPlay).
         player.pause()
     }
 

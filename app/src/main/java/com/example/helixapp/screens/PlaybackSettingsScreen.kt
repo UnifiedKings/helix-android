@@ -134,7 +134,7 @@ fun PlaybackSettingsScreen(onBack: () -> Unit) {
                         playOnDevice = enabled
                         DevicePlayback.setEnabled(ctx, enabled)
                         // Turning playback on means "listen here now".
-                        if (enabled) HelixTransport.markInitialSynced()
+                        if (enabled) HelixTransport.allowLocalPlayback()
                         // Apply right away: unload local audio, or load and join what's playing.
                         scope.launch {
                             runCatching { PlayerCommandCoordinator.syncFromBackend(ctx, forceLoadStream = true) }
