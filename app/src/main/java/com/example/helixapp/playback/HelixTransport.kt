@@ -74,10 +74,10 @@ object HelixTransport {
                 PlaybackController.clear(ctx)
             }
             is SyncAction.Unload -> {
-                // Remote mode: screens show the shared state (already published above), but this
-                // phone plays nothing. Forget the loaded item so turning playback back on reloads it.
+                // Remote mode: screens and the session's RemoteSessionPlayer show the shared state
+                // (already published above); PlaybackService unloaded local audio when the mode
+                // switched. Forget the loaded item so turning playback back on reloads it.
                 lastNowId = null
-                PlaybackController.clearIfLoaded(ctx)
             }
             is SyncAction.Load -> {
                 Log.d("HELIX_PLAYER", "Applying current-only Media3 item now=${action.item.queueItemId}")

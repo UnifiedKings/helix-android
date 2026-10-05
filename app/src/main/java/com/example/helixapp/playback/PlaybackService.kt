@@ -53,6 +53,13 @@ class PlaybackService : MediaSessionService() {
 
     @Volatile private var closingFromTaskRemoval = false
 
+    // The session presents the local ExoPlayer, or in remote mode ("Play on this device" off)
+    // a RemoteSessionPlayer mirroring the backend, so the lock screen still shows what's
+    // playing on the user's other devices.
+    private lateinit var localSessionPlayer: Player
+    private var remoteSessionPlayer: Player? = null
+    @Volatile private var remoteMode = false
+
     @Volatile private var lastEndedAtMs: Long = 0L
     @Volatile private var lastEndedUri: String? = null
 
@@ -138,6 +145,7 @@ class PlaybackService : MediaSessionService() {
         val sessionPlayer: Player = HelixForwardingPlayer(player) {
             !closingFromTaskRemoval
         }
+        localSessionPlayer = sessionPlayer
 
         // Artwork for the notification and lock screen is loaded by the session from artworkUri.
         // Reuse the stream's HTTP factory so those requests carry the Helix session cookie;
@@ -150,7 +158,7 @@ class PlaybackService : MediaSessionService() {
         )
 
         session = MediaSession.Builder(this, sessionPlayer)
-            .setCallback(HelixSessionCallback(this, sessionPlayer, scope))
+            .setCallback(HelixSessionCallback(this, scope))
             .setSessionActivity(buildNowPlayingPendingIntent())
             .setBitmapLoader(bitmapLoader)
             .build()
@@ -192,7 +200,8 @@ class PlaybackService : MediaSessionService() {
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 // Keeps the realtime connection alive in the background only while audible.
-                PlayerRealtime.setLocalPlaybackActive(isPlaying)
+                // (In remote mode the remote player reports the backend's play state instead.)
+                if (!remoteMode) PlayerRealtime.setLocalPlaybackActive(isPlaying)
             }
 
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
@@ -375,6 +384,11 @@ class PlaybackService : MediaSessionService() {
         registerNoisyAudioReceiver()
         refreshAuthHeaders()
 
+        DevicePlayback.isEnabled(this)
+        scope.launch {
+            DevicePlayback.enabled.collect { playOnDevice -> applyPlaybackMode(remote = !playOnDevice) }
+        }
+
         // A cold start opens quietly: the local player starts paused and the backend is left
         // alone. This used to pause the backend, which paused every other Helix client's
         // shared state (the web player then showed "Paused" while still playing). Instead,
@@ -391,6 +405,31 @@ class PlaybackService : MediaSessionService() {
         return super.onStartCommand(intent, flags, startId)
     }
 
+    /** Switch the session between local playback and mirroring the backend (remote mode). */
+    private fun applyPlaybackMode(remote: Boolean) {
+        val s = session ?: return
+        if (remote == remoteMode && (remote || s.player === localSessionPlayer)) return
+        remoteMode = remote
+        if (remote) {
+            Log.i("HELIX_PLAYER", "Remote mode: session mirrors the backend; no local audio")
+            endHandoff("remote mode", refreshNotification = false)
+            player.pause()
+            player.stop()
+            player.clearMediaItems()
+            val remotePlayer = remoteSessionPlayer ?: HelixForwardingPlayer(
+                RemoteSessionPlayer(this, scope) { playing ->
+                    if (remoteMode) PlayerRealtime.setLocalPlaybackActive(playing)
+                }
+            ) { true }.also { remoteSessionPlayer = it }
+            s.player = remotePlayer
+            PlayerRealtime.setLocalPlaybackActive(PlayerStateStore.state.value?.isPlaying == true)
+        } else {
+            Log.i("HELIX_PLAYER", "Local mode: session uses the phone's player")
+            s.player = localSessionPlayer
+            PlayerRealtime.setLocalPlaybackActive(player.isPlaying)
+        }
+    }
+
     override fun onTaskRemoved(rootIntent: Intent?) {
         // The app's own MediaController must unbind in every case: a bound controller keeps
         // the service from stopping later.
@@ -400,8 +439,12 @@ class PlaybackService : MediaSessionService() {
         // Not isPlaybackOngoing(): Media3 keeps the service in the foreground for a while after
         // a pause, so that would also keep a paused phone running. Ask whether it's playing (or
         // switching tracks) right now.
-        val playingHere = ::player.isInitialized &&
-            (handoffActive || (player.playWhenReady && player.mediaItemCount > 0))
+        val playingHere = if (remoteMode) {
+            // Remote mode: keep the lock-screen controls while the backend is playing.
+            PlayerStateStore.state.value?.let { it.isPlaying && it.now != null } == true
+        } else {
+            ::player.isInitialized && (handoffActive || (player.playWhenReady && player.mediaItemCount > 0))
+        }
         if (keepPlaying && playingHere) {
             // Playing (or mid track handoff): keep going in the foreground, like other music
             // apps. The notification and lock screen stay, and realtime sync keeps running.
@@ -513,6 +556,8 @@ class PlaybackService : MediaSessionService() {
 
         session?.release()
         session = null
+        remoteSessionPlayer?.release()
+        remoteSessionPlayer = null
 
         scope.cancel()
         super.onDestroy()

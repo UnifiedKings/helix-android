@@ -18,7 +18,6 @@ import kotlinx.coroutines.launch
  */
 class HelixSessionCallback(
     private val ctx: Context,
-    private val player: Player,
     private val scope: CoroutineScope,
 ) : MediaSession.Callback {
     override fun onConnect(
@@ -61,6 +60,7 @@ class HelixSessionCallback(
         // (notification shade + lock screen card) commands to it. It shares our package name, so
         // it must be excluded here or lock screen Next/Previous reach the single-item ExoPlayer
         // timeline directly (Next does nothing, Previous only restarts the track).
+        Log.d("HELIX_PLAYER", "Session command $playerCommand from ${controller.packageName} (notification controller: ${session.isMediaNotificationController(controller)})")
         if (controller.packageName == ctx.packageName && !session.isMediaNotificationController(controller)) {
             return SessionResult.RESULT_SUCCESS
         }
@@ -69,7 +69,7 @@ class HelixSessionCallback(
             Player.COMMAND_PLAY_PAUSE -> {
                 scope.launch {
                     runCatching {
-                        if (player.isPlaying) {
+                        if (session.player.isPlaying) {
                             PlayerCommandCoordinator.pause(ctx)
                         } else {
                             PlayerCommandCoordinator.resume(ctx)
@@ -107,11 +107,11 @@ class HelixSessionCallback(
                 // We only need backend involvement for the "previous track" case.
                 // For the "restart current track" case, allowing Media3 to handle it locally
                 // avoids unnecessary backend calls and prevents extra refresh latency.
-                val elapsedMs = player.currentPosition
+                val elapsedMs = session.player.currentPosition
                 if (elapsedMs > 3_000L) {
                     // Media3 intentionally has no real previous item. Restart the current track
                     // ourselves and consume the transport command.
-                    player.seekTo(0L)
+                    session.player.seekTo(0L)
                     return SessionResult.RESULT_ERROR_NOT_SUPPORTED
                 }
                 // <= 3s: move the backend queue pointer. This shares the same serialization

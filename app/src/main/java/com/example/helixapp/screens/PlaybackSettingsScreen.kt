@@ -118,7 +118,7 @@ fun PlaybackSettingsScreen(onBack: () -> Unit) {
 
         SettingBlock(
             "Play on this device",
-            "When off, this phone works as a remote: it shows and controls what's playing, but your other Helix devices play the audio. Lock screen controls need playback on.",
+            "When off, this phone works as a remote: it shows and controls what's playing, including from the lock screen, but your other Helix devices play the audio.",
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
