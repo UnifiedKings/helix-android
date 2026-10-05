@@ -112,7 +112,7 @@ fun PlaybackSettingsScreen(onBack: () -> Unit) {
             IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Back") }
             Column {
                 Text("Playback & queue", style = MaterialTheme.typography.headlineSmall)
-                Text("Synced with your Helix account", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("This phone, plus settings shared with your Helix account", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
 
@@ -177,7 +177,7 @@ fun PlaybackSettingsScreen(onBack: () -> Unit) {
         if (loading) {
             CircularProgressIndicator()
         } else {
-            SettingBlock("Add to queue", "Choose where normal Add to Queue actions place a song.") {
+            SettingBlock("Add to queue", "Choose where Add to queue places a song.") {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ChoiceButton("End", queuePosition == "append", Modifier.weight(1f)) {
                         queuePosition = "append"
@@ -204,7 +204,9 @@ fun PlaybackSettingsScreen(onBack: () -> Unit) {
                 )
             }
 
-            SettingBlock("Default volume", "Starting volume used by Helix clients that honor this account setting.") {
+            // Android music apps use the phone's own media volume, so this account setting isn't
+            // applied here; it's the web player's starting volume.
+            SettingBlock("Default volume", "Starting volume for the Helix web player. On this phone, use your volume buttons.") {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("Volume", style = MaterialTheme.typography.bodyMedium)
                     Text("${(defaultVolume * 100).roundToInt()}%", color = HelixAccent, style = MaterialTheme.typography.labelLarge)
