@@ -27,6 +27,12 @@ Helix for Android connects to an existing Helix server for music discovery, play
 - Native Android appearance customization
 - Configurable playback behavior
 - Support for playback started or changed by other Helix clients
+- Remote mode: control playback on your other Helix devices without playing audio on the phone
+- Keeps playing after the app is closed
+- Android Auto browsing and playback
+- Voice search ("Hey Google, play … on Helix")
+- Sleep timer
+- Listening history
 
 ### Stations
 
@@ -62,11 +68,11 @@ Once installed, open Helix and connect it to your existing Helix server.
 
 After launching the app:
 
-1. Open **Settings**
-2. Open **Account**
-3. Enter your Helix server URL
-4. Enter your Helix username and password
-5. Connect
+1. Enter your Helix server URL on the sign-in screen
+2. Enter your Helix username and password
+3. Connect
+
+To change servers or accounts later, open **Settings** → **Connection**.
 
 <p align="center">
   <img src="docs/media/connection.gif" width="320" alt="Connecting Helix for Android to a Helix server">

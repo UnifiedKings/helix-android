@@ -4,10 +4,6 @@
 
 A large update: new features, many playback fixes, and a rebuilt app structure with tests.
 
-**Installing:** this release is signed with a new key. If you have an earlier Helix build installed (an
-upstream release or a self-built debug build), uninstall it first, then install `helix-0.2.0.apk`.
-You'll need to sign in again.
-
 ### New
 
 - **Android Auto**: browse your Queue, Stations, Playlists and Recent history in the car and start
@@ -52,7 +48,7 @@ You'll need to sign in again.
 
 ### Known issues (server side)
 
-These need fixes in the Helix server and are with its maintainer:
+These need fixes in the Helix server:
 
 - The web player doesn't follow play/pause/track changes made from other devices.
 - Removing a queue item can report an error even though it worked (the app handles this).
