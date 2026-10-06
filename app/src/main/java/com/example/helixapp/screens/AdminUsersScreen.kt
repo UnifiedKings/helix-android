@@ -24,7 +24,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,148 +38,34 @@ import androidx.compose.ui.unit.dp
 import com.example.helixapp.ui.theme.HelixAccent
 import com.example.helixapp.ui.theme.HelixBorder
 import com.example.helixapp.ui.theme.HelixSurfaceRaised
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
 import org.json.JSONObject
-
-private data class AdminUserUi(
-    val id: String,
-    val username: String,
-    val role: String,
-    val isActive: Boolean,
-    val subsonicImportOverride: Boolean,
-    val canImportSubsonic: Boolean,
-)
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable
-fun AdminUsersScreen(onBack: () -> Unit) {
+fun AdminUsersScreen(
+    onBack: () -> Unit,
+    viewModel: AdminUsersViewModel = helixViewModel { AdminUsersViewModel(it) },
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var loading by remember { mutableStateOf(true) }
-    var saving by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("") }
-    var users by remember { mutableStateOf(emptyList<AdminUserUi>()) }
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val loading = state.loading
+    val saving = state.saving
+    val status = state.status
+    val users = state.users
 
     var newUsername by remember { mutableStateOf("") }
     var newPassword by remember { mutableStateOf("") }
     var newRole by remember { mutableStateOf("user") }
 
-    fun parseUsers(body: String): List<AdminUserUi> {
-        val arr = JSONArray(body)
-        return buildList {
-            for (i in 0 until arr.length()) {
-                val o = arr.optJSONObject(i) ?: continue
-                add(
-                    AdminUserUi(
-                        id = o.optString("id"),
-                        username = o.optString("username"),
-                        role = o.optString("role", "user"),
-                        isActive = o.optBoolean("is_active", true),
-                        subsonicImportOverride = o.optBoolean("subsonic_import_override", false),
-                        canImportSubsonic = o.optBoolean("can_import_subsonic", false),
-                    )
-                )
-            }
-        }
+    fun updateUser(user: AdminUser, patch: JSONObject) = viewModel.updateUser(user, patch)
+
+    fun createUser() = viewModel.createUser(newUsername, newPassword, newRole) {
+        newUsername = ""
+        newPassword = ""
+        newRole = "user"
     }
-
-    fun loadUsers() {
-        scope.launch {
-            loading = true
-            status = ""
-            try {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val meResp = withContext(Dispatchers.IO) { api.me() }
-                if (!meResp.isSuccessful) {
-                    status = "Could not verify administrator access (HTTP ${meResp.code()})"
-                    return@launch
-                }
-                val role = JSONObject(meResp.body().orEmpty()).optString("role")
-                if (role != "admin") {
-                    status = "Administrator access required"
-                    return@launch
-                }
-
-                val resp = withContext(Dispatchers.IO) { api.adminUsers() }
-                if (!resp.isSuccessful) {
-                    status = "Could not load users (HTTP ${resp.code()})"
-                    return@launch
-                }
-                users = parseUsers(resp.body().orEmpty())
-            } catch (e: Exception) {
-                status = "Could not load users: ${e.message ?: e.javaClass.simpleName}"
-            } finally {
-                loading = false
-            }
-        }
-    }
-
-    fun updateUser(user: AdminUserUi, patch: JSONObject) {
-        scope.launch {
-            saving = true
-            status = ""
-            try {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val payload = patch.toString()
-                    .toRequestBody("application/json; charset=utf-8".toMediaType())
-                val resp = withContext(Dispatchers.IO) { api.adminUpdateUser(user.id, payload) }
-                if (!resp.isSuccessful) {
-                    status = "Could not update ${user.username} (HTTP ${resp.code()})"
-                    return@launch
-                }
-                val updated = parseUser(JSONObject(resp.body().orEmpty()))
-                users = users.map { if (it.id == updated.id) updated else it }
-                status = "Saved"
-            } catch (e: Exception) {
-                status = "Could not update user: ${e.message ?: e.javaClass.simpleName}"
-            } finally {
-                saving = false
-            }
-        }
-    }
-
-    fun createUser() {
-        val username = newUsername.trim()
-        if (username.length < 3 || newPassword.length < 8) return
-        scope.launch {
-            saving = true
-            status = ""
-            try {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val body = JSONObject()
-                    .put("username", username)
-                    .put("password", newPassword)
-                    .put("role", newRole)
-                    .toString()
-                    .toRequestBody("application/json; charset=utf-8".toMediaType())
-                val resp = withContext(Dispatchers.IO) { api.adminCreateUser(body) }
-                if (!resp.isSuccessful) {
-                    val detail = runCatching {
-                        JSONObject(resp.errorBody()?.string().orEmpty()).optString("detail")
-                    }.getOrDefault("")
-                    status = detail.ifBlank { "Could not create user (HTTP ${resp.code()})" }
-                    return@launch
-                }
-                val created = parseUser(JSONObject(resp.body().orEmpty()))
-                users = (users + created).sortedBy { it.username.lowercase() }
-                newUsername = ""
-                newPassword = ""
-                newRole = "user"
-                status = "Created ${created.username}"
-            } catch (e: Exception) {
-                status = "Could not create user: ${e.message ?: e.javaClass.simpleName}"
-            } finally {
-                saving = false
-            }
-        }
-    }
-
-    LaunchedEffect(Unit) { loadUsers() }
 
     Column(
         modifier = Modifier
@@ -307,18 +192,9 @@ fun AdminUsersScreen(onBack: () -> Unit) {
     }
 }
 
-private fun parseUser(o: JSONObject): AdminUserUi = AdminUserUi(
-    id = o.optString("id"),
-    username = o.optString("username"),
-    role = o.optString("role", "user"),
-    isActive = o.optBoolean("is_active", true),
-    subsonicImportOverride = o.optBoolean("subsonic_import_override", false),
-    canImportSubsonic = o.optBoolean("can_import_subsonic", false),
-)
-
 @Composable
 private fun AdminUserCard(
-    user: AdminUserUi,
+    user: AdminUser,
     disabled: Boolean,
     onRoleChange: (String) -> Unit,
     onActiveChange: (Boolean) -> Unit,

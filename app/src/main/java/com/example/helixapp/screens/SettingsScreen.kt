@@ -15,6 +15,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,9 +28,7 @@ import androidx.compose.ui.unit.dp
 import com.example.helixapp.ui.theme.AppearancePrefs
 import com.example.helixapp.ui.theme.HelixAccent
 import com.example.helixapp.ui.theme.HelixBorder
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import org.json.JSONObject
+import com.example.helixapp.data.HelixAccountRepository
 
 @Composable
 fun SettingsScreen(
@@ -41,6 +40,7 @@ fun SettingsScreen(
     val ctx = LocalContext.current
     val username = HelixPrefs.getUsername(ctx).orEmpty()
     val connected = !HelixPrefs.getSessionToken(ctx).isNullOrBlank()
+    val sessionExpired by AuthState.sessionExpired.collectAsState()
     val host = HelixPrefs.getBaseUrl(ctx)
     var role by remember { mutableStateOf<String?>(null) }
 
@@ -52,17 +52,7 @@ fun SettingsScreen(
     LaunchedEffect(connected, host) {
         role = null
         if (!connected) return@LaunchedEffect
-        runCatching {
-            val api = HelixClient.create(ctx, host)
-            val resp = withContext(Dispatchers.IO) { api.me() }
-            if (resp.isSuccessful) {
-                JSONObject(resp.body().orEmpty()).optString("role", "")
-            } else {
-                ""
-            }
-        }.onSuccess {
-            role = it
-        }
+        role = runCatching { HelixAccountRepository(ctx).me().role }.getOrNull()
     }
 
     Column(
@@ -78,7 +68,11 @@ fun SettingsScreen(
             SettingsRow(
                 title = if (connected && username.isNotBlank()) username else "Connection",
                 subtitle = if (connected) host else "Connect this app to your Helix server",
-                value = if (connected) "Connected" else null,
+                value = when {
+                    connected && sessionExpired -> "Session expired"
+                    connected -> "Connected"
+                    else -> null
+                },
                 onClick = onOpenConnection,
             )
         }

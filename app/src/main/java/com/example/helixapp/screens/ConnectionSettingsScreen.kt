@@ -18,6 +18,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,17 +30,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.example.helixapp.data.HelixAccountRepository
 import com.example.helixapp.prefs.AppPrefs
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import okhttp3.Headers
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
 
 @Composable
-fun ConnectionSettingsScreen(onBack: () -> Unit) {
+fun ConnectionSettingsScreen(onBack: () -> Unit, onDisconnected: () -> Unit = {}) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -50,8 +46,13 @@ fun ConnectionSettingsScreen(onBack: () -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var connected by remember { mutableStateOf(!HelixPrefs.getSessionToken(ctx).isNullOrBlank()) }
 
+    val sessionExpired by AuthState.sessionExpired.collectAsState()
     LaunchedEffect(Unit) {
-        status = if (connected) "Connected to Helix" else "Not connected"
+        status = when {
+            connected && sessionExpired -> "Session expired. Enter your password and tap Connect."
+            connected -> "Connected to Helix"
+            else -> "Not connected"
+        }
     }
 
     Column(
@@ -70,7 +71,11 @@ fun ConnectionSettingsScreen(onBack: () -> Unit) {
                 Text(
                     status,
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = when {
+                        connected && sessionExpired -> MaterialTheme.colorScheme.error
+                        connected -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                 )
             }
         }
@@ -115,11 +120,23 @@ fun ConnectionSettingsScreen(onBack: () -> Unit) {
                         return@Button
                     }
 
+                    val previousUrl = HelixPrefs.getBaseUrl(ctx).trim().trimEnd('/')
+                    val serverChanged = !previousUrl.equals(b.trimEnd('/'), ignoreCase = true)
+                    if (serverChanged && connected) {
+                        // The saved session cookie was issued by the old server. Never send it to
+                        // the new one (API calls, streams and the realtime socket all would).
+                        AppPrefs.clearSession(ctx)
+                        connected = false
+                    }
+
                     AppPrefs.saveBaseUrl(ctx, b)
                     HelixPrefs.setUsername(ctx, u)
                     if (password.isBlank()) {
-                        HelixWebSession.sync(ctx)
-                        status = "Settings saved"
+                        status = if (serverChanged) {
+                            "Server changed. Enter your password to connect."
+                        } else {
+                            "Settings saved"
+                        }
                         return@Button
                     }
 
@@ -127,25 +144,12 @@ fun ConnectionSettingsScreen(onBack: () -> Unit) {
                     status = "Connecting…"
                     scope.launch {
                         try {
-                            val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                            val json = JSONObject().put("username", u).put("password", password).toString()
-                            val requestBody = json.toRequestBody("application/json; charset=utf-8".toMediaType())
-                            val resp = withContext(Dispatchers.IO) { api.login(requestBody) }
-                            if (!resp.isSuccessful) {
-                                status = "Login failed (HTTP ${resp.code()})"
-                                return@launch
-                            }
-                            val token = extractSessionTokenForSettings(resp.headers())
-                            if (token.isNullOrBlank()) {
-                                status = "Login succeeded, but no session cookie was returned"
-                                return@launch
-                            }
-                            AppPrefs.saveSessionCookie(ctx, token)
+                            HelixLogin.logIn(ctx, b, u, password)
                             password = ""
                             connected = true
                             status = "Connected as $u"
-                        } catch (e: Exception) {
-                            status = "Connection error: ${e.message ?: e.javaClass.simpleName}"
+                        } catch (e: LoginException) {
+                            status = e.message ?: "Login failed"
                         } finally {
                             busy = false
                         }
@@ -162,14 +166,14 @@ fun ConnectionSettingsScreen(onBack: () -> Unit) {
                     status = "Disconnecting…"
                     scope.launch {
                         try {
-                            val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                            withContext(Dispatchers.IO) { api.logout() }
+                            HelixAccountRepository(ctx).logout()
                         } catch (_: Exception) {
                         } finally {
                             AppPrefs.clearSession(ctx)
                             connected = false
                             status = "Disconnected"
                             busy = false
+                            onDisconnected()
                         }
                     }
                 },
@@ -184,15 +188,4 @@ fun ConnectionSettingsScreen(onBack: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
-}
-
-private fun extractSessionTokenForSettings(headers: Headers): String? {
-    for (setCookie in headers.values("Set-Cookie")) {
-        val idx = setCookie.indexOf("mr_session=")
-        if (idx >= 0) {
-            val token = setCookie.substring(idx + "mr_session=".length).substringBefore(';').trim()
-            if (token.isNotBlank()) return token
-        }
-    }
-    return null
 }

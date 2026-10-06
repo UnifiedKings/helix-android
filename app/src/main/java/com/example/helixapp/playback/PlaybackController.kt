@@ -3,173 +3,79 @@ package com.example.helixapp.playback
 import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.coroutines.resume
 
 object PlaybackController {
 
-    private const val PICTURE_TYPE_FRONT_COVER = 3
+    @Volatile
+    private var controllerFuture: com.google.common.util.concurrent.ListenableFuture<MediaController>? = null
 
     @Volatile
     private var controller: MediaController? = null
 
-    suspend fun awaitController(ctx: Context): MediaController {
-        val existing = controller
-        if (existing != null) return existing
-
-        return kotlinx.coroutines.suspendCancellableCoroutine { cont ->
-            get(ctx) { c ->
-                if (!cont.isCompleted) cont.resume(c)
-            }
-        }
-    }
-
-    data class Snapshot(
-        val mediaId: String?,
-        val isPlaying: Boolean,
-    )
-
-    suspend fun snapshot(ctx: Context): Snapshot {
-        val c = awaitController(ctx)
-        return Snapshot(c.currentMediaItem?.mediaId, c.isPlaying)
-    }
-
-    suspend fun awaitAudibleStart(
-        ctx: Context,
-        startSnapshot: Snapshot,
-        timeoutMs: Long = 8_000L,
-    ): Boolean {
-        val c = awaitController(ctx)
-
-        val nowId = c.currentMediaItem?.mediaId
-        if (!startSnapshot.isPlaying && c.isPlaying) return true
-        if (
-            startSnapshot.isPlaying &&
-            startSnapshot.mediaId != null &&
-            nowId != null &&
-            nowId != startSnapshot.mediaId &&
-            c.isPlaying
-        ) return true
-
-        return withTimeoutOrNull(timeoutMs) {
-            var done = false
-            val listener = object : Player.Listener {
-                override fun onIsPlayingChanged(isPlaying: Boolean) {
-                    if (done) return
-                    if (!startSnapshot.isPlaying && isPlaying) {
-                        done = true
-                        return
-                    }
-                    if (startSnapshot.isPlaying && isPlaying) {
-                        val cur = c.currentMediaItem?.mediaId
-                        if (
-                            cur != null &&
-                            startSnapshot.mediaId != null &&
-                            cur != startSnapshot.mediaId
-                        ) {
-                            done = true
-                        }
-                    }
-                }
-
-                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                    if (done) return
-                    if (startSnapshot.isPlaying) {
-                        val cur = mediaItem?.mediaId
-                        if (
-                            cur != null &&
-                            startSnapshot.mediaId != null &&
-                            cur != startSnapshot.mediaId &&
-                            c.isPlaying
-                        ) {
-                            done = true
-                        }
-                    }
-                }
-
-                override fun onPlaybackStateChanged(playbackState: Int) {
-                    if (done) return
-                    if (playbackState == Player.STATE_READY && c.isPlaying) {
-                        if (!startSnapshot.isPlaying) {
-                            done = true
-                            return
-                        }
-                        val cur = c.currentMediaItem?.mediaId
-                        if (
-                            startSnapshot.mediaId == null ||
-                            cur == null ||
-                            cur != startSnapshot.mediaId
-                        ) {
-                            done = true
-                        }
-                    }
-                }
-            }
-
-            c.addListener(listener)
-            try {
-                while (!done) {
-                    if (!startSnapshot.isPlaying && c.isPlaying) {
-                        done = true
-                        break
-                    }
-                    if (startSnapshot.isPlaying && c.isPlaying) {
-                        val cur = c.currentMediaItem?.mediaId
-                        if (
-                            startSnapshot.mediaId == null ||
-                            cur == null ||
-                            cur != startSnapshot.mediaId
-                        ) {
-                            if (c.playbackState == Player.STATE_READY) {
-                                done = true
-                                break
-                            }
-                        }
-                    }
-                    delay(50)
-                }
-            } finally {
-                c.removeListener(listener)
-            }
-            true
-        } ?: false
-    }
-
+    /**
+     * Run [onReady] with the shared MediaController, always on the controller's application
+     * (main) thread: MediaController throws when called from any other thread. Callers on
+     * background threads (e.g. the realtime websocket sync) get their work posted, in order.
+     */
+    @Synchronized
     fun get(ctx: Context, onReady: (MediaController) -> Unit) {
-        val existing = controller
+        val existing = controller?.takeIf { it.isConnected }
+        if (existing == null && controller != null) {
+            // The service was destroyed (e.g. after the task was removed) and took the
+            // connection with it. Drop the dead controller and connect again below.
+            Log.w("HELIX_PLAYER", "MediaController disconnected; reconnecting")
+            controller = null
+            controllerFuture = null
+        }
         if (existing != null) {
-            onReady(existing)
+            val looper = existing.applicationLooper
+            if (Looper.myLooper() == looper) {
+                onReady(existing)
+            } else {
+                Handler(looper).post { onReady(existing) }
+            }
             return
         }
 
-        val token = SessionToken(ctx, ComponentName(ctx, PlaybackService::class.java))
-        val future = MediaController.Builder(ctx, token).buildAsync()
+        var future = controllerFuture
+        if (future == null) {
+            // Bind with the application context. Callers often pass an Activity (a screen's
+            // LocalContext); Android force-unbinds an Activity's connections when it's destroyed
+            // (e.g. the app is swiped away), and the later release() then crashed with
+            // "Service not registered".
+            val appCtx = ctx.applicationContext
+            val token = SessionToken(appCtx, ComponentName(appCtx, PlaybackService::class.java))
+            future = MediaController.Builder(appCtx, token).buildAsync()
+            controllerFuture = future
+        }
+
         future.addListener(
             {
-                val c = future.get()
+                val c = try {
+                    future.get()
+                } catch (e: Exception) {
+                    // Connecting to PlaybackService failed. Forget the failed attempt so the
+                    // next call retries, instead of rethrowing the same failure forever.
+                    Log.e("HELIX_PLAYER", "MediaController connection failed", e)
+                    synchronized(this) {
+                        if (controllerFuture === future) controllerFuture = null
+                    }
+                    return@addListener
+                }
                 controller = c
                 Log.d("HELIX_PLAYER", "MediaController ready")
                 onReady(c)
             },
-            Runnable::run
+            androidx.core.content.ContextCompat.getMainExecutor(ctx)
         )
-    }
-
-    fun playUrl(ctx: Context, url: String, autoplay: Boolean = true) {
-        Log.d("HELIX_PLAYER", "playUrl() -> $url")
-        get(ctx) { c ->
-            val item = MediaItem.fromUri(url)
-            c.setMediaItem(item)
-            c.prepare()
-            if (autoplay) c.play() else c.pause()
-        }
     }
 
     fun setCurrentItem(
@@ -209,11 +115,26 @@ object PlaybackController {
         }
     }
 
+    @Synchronized
     fun release() {
-        val existing = controller ?: return
+        val existingFuture = controllerFuture ?: return
+        controllerFuture = null
         controller = null
-        runCatching { existing.release() }
+        runCatching { MediaController.releaseFuture(existingFuture) }
             .onFailure { Log.w("HELIX_PLAYER", "MediaController release failed", it) }
+    }
+
+    /** The Media3 item HelixTransport loads for a backend now-playing entry. */
+    fun mediaItemFor(ctx: Context, now: NowPlayingUi): MediaItem {
+        val base = com.example.helixapp.HelixPrefs.getBaseUrl(ctx).trimEnd('/')
+        return QueueMediaItem(
+            queueItemId = now.queueItemId,
+            url = "$base/api/stream/${now.queueItemId}",
+            title = now.title,
+            artist = now.artist,
+            album = now.album,
+            artworkUrl = com.example.helixapp.HelixImages.absoluteUrl(base, now.artUrl),
+        ).toMediaItem()
     }
 
     private fun QueueMediaItem.toMediaItem(): MediaItem {
@@ -224,9 +145,6 @@ object PlaybackController {
             .apply {
                 if (artworkUrl.isNotBlank()) {
                     setArtworkUri(Uri.parse(artworkUrl))
-                }
-                artworkData?.let { bytes ->
-                    setArtworkData(bytes, PICTURE_TYPE_FRONT_COVER)
                 }
             }
             .build()
@@ -254,5 +172,4 @@ data class QueueMediaItem(
     val artist: String,
     val album: String,
     val artworkUrl: String,
-    val artworkData: ByteArray? = null,
 )

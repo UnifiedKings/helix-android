@@ -14,10 +14,4 @@ object RefreshSignals {
     fun bumpPlaylists() {
         _playlists.value = _playlists.value + 1
     }
-
-    private val _player = MutableStateFlow(0)
-    val player = _player.asStateFlow()
-    fun bumpPlayer() {
-        _player.value = _player.value + 1
-    }
 }

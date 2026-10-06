@@ -14,7 +14,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
@@ -28,9 +27,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,148 +37,51 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
-import com.example.helixapp.playback.HelixTransport
+import com.example.helixapp.playback.PlaybackActions
 import com.example.helixapp.ui.theme.HelixAccent
 import com.example.helixapp.ui.theme.HelixBorder
 import com.example.helixapp.ui.theme.HelixMuted
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
-import org.json.JSONObject
-
-data class PlaylistUi(
-    val id: String,
-    val name: String,
-    val systemKey: String,
-    val kind: String,
-    val trackCount: Int,
-    val thumbnailUrl: String,
-)
 
 @Composable
 fun PlaylistsScreen(
     onOpenPlaylist: (String) -> Unit,
     onNavigateToNowPlaying: () -> Unit = {},
     createRequestKey: Int = 0,
+    viewModel: PlaylistsViewModel = helixViewModel { PlaylistsViewModel(it) },
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var status by remember { mutableStateOf("Idle") }
-    var loading by remember { mutableStateOf(false) }
-    var playlists by remember { mutableStateOf(emptyList<PlaylistUi>()) }
-    var lastRefreshMs by remember { mutableStateOf(0L) }
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val playlists = state.playlists
+    val loading = state.loading
     var creating by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<PlaylistUi?>(null) }
 
-    val playlistsRefreshTick by RefreshSignals.playlists.collectAsState()
-
-    fun refresh() {
-        lastRefreshMs = System.currentTimeMillis()
-        if (HelixPrefs.getSessionToken(ctx).isNullOrBlank()) {
-            status = "Not logged in — go to Settings"
-            playlists = emptyList()
-            return
-        }
-        loading = true
-        status = "Loading…"
-        scope.launch {
-            try {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val resp = withContext(Dispatchers.IO) { api.listPlaylists() }
-                val body = resp.body().orEmpty()
-                if (resp.code() == 401) {
-                    status = "Unauthorized (401) — session expired? Login again."
-                    playlists = emptyList()
-                    return@launch
-                }
-                if (!resp.isSuccessful) {
-                    status = "Failed (HTTP ${resp.code()})"
-                    playlists = emptyList()
-                    return@launch
-                }
-                playlists = parsePlaylists(body)
-                status = if (playlists.isEmpty()) "No playlists" else "Done"
-            } catch (e: Exception) {
-                status = "Error: ${e.javaClass.simpleName}: ${e.message}"
-                playlists = emptyList()
-            } finally {
-                loading = false
-            }
+    fun playPlaylistFromList(pl: PlaylistUi, shuffle: Boolean) {
+        scope.launchPlaybackAction(
+            failureAction = if (shuffle) "Shuffle" else "Play",
+            overlayMessage = if (shuffle) "Shuffling playlist…" else "Starting playlist…",
+            onSuccess = onNavigateToNowPlaying,
+        ) {
+            PlaybackActions.playPlaylist(ctx, pl.playId, shuffle)
         }
     }
-
-    suspend fun playPlaylistFromList(pl: PlaylistUi, shuffle: Boolean) {
-        showLoadingOverlay(if (shuffle) "Shuffling playlist…" else "Starting playlist…")
-        try {
-            HelixPrefs.setLastStationName(ctx, null)
-            val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-            val effectivePlaylistId = pl.systemKey.takeIf { it.isNotBlank() } ?: pl.id
-            val mt = "application/json; charset=utf-8".toMediaType()
-            val body = JSONObject()
-                .put("playlist_id", effectivePlaylistId)
-                .put("shuffle", shuffle)
-                .toString()
-                .toRequestBody(mt)
-
-            val playResp = withContext(Dispatchers.IO) { api.playPlaylist(body) }
-            if (!playResp.isSuccessful) {
-                status = if (shuffle) "Shuffle failed (HTTP ${playResp.code()})" else "Play failed (HTTP ${playResp.code()})"
-                return
-            }
-
-            showLoadingOverlay("Loading now playing…")
-            HelixTransport.refreshAndPlayCurrent(ctx)
-            status = if (shuffle) "Shuffling playlist: ${pl.name}" else "Playing playlist: ${pl.name}"
-        } catch (e: Exception) {
-            status = if (shuffle) {
-                "Shuffle error: ${e.javaClass.simpleName}: ${e.message}"
-            } else {
-                "Play error: ${e.javaClass.simpleName}: ${e.message}"
-            }
-        } finally {
-            onNavigateToNowPlaying()
-            hideLoadingOverlay()
-        }
-    }
-
-    LaunchedEffect(Unit) { refresh() }
 
     LaunchedEffect(createRequestKey) {
         if (createRequestKey > 0) creating = true
     }
 
-    LaunchedEffect(playlistsRefreshTick) {
-        if (playlistsRefreshTick > 0) refresh()
-    }
-
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                val now = System.currentTimeMillis()
-                if (now - lastRefreshMs > 30_000L && !loading) {
-                    refresh()
-                }
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
-    val statusMessage = when {
-        loading -> "Loading playlists…"
-        status.startsWith("Unauthorized") || status.startsWith("Failed") || status.startsWith("Error") || status.startsWith("Not logged") -> status
-        playlists.isEmpty() && status == "No playlists" -> "No playlists yet"
-        else -> null
+    // Coming back to the tab or the app after a while: refresh.
+    LaunchedEffect(Unit) { viewModel.refreshIfStale() }
+    LifecycleResumeEffect(viewModel) {
+        viewModel.refreshIfStale()
+        onPauseOrDispose {}
     }
 
     Column(
@@ -195,25 +95,24 @@ fun PlaylistsScreen(
             ) {
                 CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
             }
-        } else if (statusMessage != null && playlists.isNotEmpty()) {
+        } else if (state.error != null && playlists.isNotEmpty()) {
             Text(
-                text = statusMessage,
+                text = state.error.orEmpty(),
                 style = MaterialTheme.typography.bodySmall,
-                color = if (
-                    status.startsWith("Unauthorized") ||
-                    status.startsWith("Failed") ||
-                    status.startsWith("Error") ||
-                    status.startsWith("Not logged")
-                ) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = MaterialTheme.colorScheme.error,
             )
         }
 
         if (playlists.isEmpty() && !loading) {
             Box(modifier = Modifier.padding(top = 12.dp, start = 2.dp)) {
                 Text(
-                    text = if (status.startsWith("Not logged")) "Log in from Settings to load your playlists." else "You have no playlists yet.",
+                    text = when {
+                        !state.signedIn -> "Log in from Settings to load your playlists."
+                        state.error != null -> state.error.orEmpty()
+                        else -> "You have no playlists yet."
+                    },
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (state.error != null && state.signedIn) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         } else {
@@ -224,8 +123,9 @@ fun PlaylistsScreen(
                         onOpenPlaylist = {
                             onOpenPlaylist(if (pl.systemKey == "liked") "liked" else pl.id)
                         },
-                        onPlay = { scope.launch { playPlaylistFromList(pl, shuffle = false) } },
-                        onShuffle = { scope.launch { playPlaylistFromList(pl, shuffle = true) } },
+                        onPlay = { playPlaylistFromList(pl, shuffle = false) },
+                        onShuffle = { playPlaylistFromList(pl, shuffle = true) },
+                        onDelete = { pendingDelete = pl },
                     )
                     if (index < playlists.lastIndex) {
                         Box(
@@ -241,30 +141,29 @@ fun PlaylistsScreen(
         }
     }
 
+    pendingDelete?.let { pl ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Delete playlist?") },
+            text = { Text("\"${pl.name}\" will be deleted for good.") },
+            confirmButton = {
+                HelixTextButton(
+                    onClick = {
+                        pendingDelete = null
+                        viewModel.delete(pl)
+                    },
+                ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                HelixTextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
+            },
+        )
+    }
+
     if (creating) {
         PlaylistCreateDialog(
             onDismiss = { creating = false },
-            onCreate = { name ->
-                scope.launch {
-                    try {
-                        val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                        val payload = JSONObject().put("name", name).toString()
-                        val body = payload.toRequestBody("application/json; charset=utf-8".toMediaType())
-                        val resp: retrofit2.Response<String> = withContext(Dispatchers.IO) {
-                            api.createPlaylist(body)
-                        }
-                        if (!resp.isSuccessful) {
-                            status = "Create failed (HTTP ${resp.code()})"
-                            return@launch
-                        }
-                        status = "Created playlist: $name"
-                        creating = false
-                        refresh()
-                    } catch (e: Exception) {
-                        status = "Create error: ${e.javaClass.simpleName}: ${e.message}"
-                    }
-                }
-            }
+            onCreate = { name -> viewModel.create(name, onCreated = { creating = false }) }
         )
     }
 }
@@ -275,6 +174,7 @@ private fun PlaylistRow(
     onOpenPlaylist: () -> Unit,
     onPlay: () -> Unit,
     onShuffle: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     val ctx = LocalContext.current
     val cover = HelixImages.absoluteUrl(HelixPrefs.getBaseUrl(ctx), playlist.thumbnailUrl)
@@ -345,6 +245,16 @@ private fun PlaylistRow(
                         onShuffle()
                     },
                 )
+                // System playlists (e.g. Liked songs) can't be deleted.
+                if (playlist.systemKey.isBlank()) {
+                    DropdownMenuItem(
+                        text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                        onClick = {
+                            menuExpanded = false
+                            onDelete()
+                        },
+                    )
+                }
             }
         }
     }
@@ -398,24 +308,4 @@ private fun playlistBadgeLabel(playlist: PlaylistUi): String? {
 private fun simpleTitleCase(value: String): String {
     if (value.isBlank()) return value
     return value.substring(0, 1).uppercase() + value.substring(1)
-}
-
-private fun parsePlaylists(json: String): List<PlaylistUi> {
-    val arr = JSONArray(json)
-    val out = ArrayList<PlaylistUi>(arr.length())
-    for (i in 0 until arr.length()) {
-        val o = arr.optJSONObject(i) ?: continue
-        val systemKey = o.optString("system_key", "")
-        out.add(
-            PlaylistUi(
-                id = o.optString("id", ""),
-                name = o.optString("name", ""),
-                systemKey = systemKey,
-                kind = o.optString("kind", ""),
-                trackCount = o.optInt("track_count", 0),
-                thumbnailUrl = o.optString("thumbnail_url", ""),
-            )
-        )
-    }
-    return out
 }

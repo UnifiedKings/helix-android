@@ -23,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,15 +43,18 @@ fun StationsAndPlaylistsScreen(
     onOpenPlaylist: (String) -> Unit,
     onNavigateToNowPlaying: () -> Unit = {},
 ) {
-    var tab by remember { mutableIntStateOf(0) } // 0 = stations, 1 = playlists
+    var tab by rememberSaveable { mutableIntStateOf(0) } // 0 = stations, 1 = playlists, 2 = history
     var stationCreateRequest by remember { mutableIntStateOf(0) }
     var playlistCreateRequest by remember { mutableIntStateOf(0) }
 
     Surface(modifier = Modifier.fillMaxSize(), color = HelixSurface) {
         Column(modifier = Modifier.fillMaxSize()) {
             LibraryHeader(
-                onAdd = {
-                    if (tab == 0) stationCreateRequest++ else playlistCreateRequest++
+                // History has nothing to create.
+                onAdd = when (tab) {
+                    0 -> ({ stationCreateRequest++ })
+                    1 -> ({ playlistCreateRequest++ })
+                    else -> null
                 }
             )
 
@@ -64,17 +68,17 @@ fun StationsAndPlaylistsScreen(
                     .fillMaxSize()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
-                if (tab == 0) {
-                    StationsScreen(
+                when (tab) {
+                    0 -> StationsScreen(
                         onNavigateToNowPlaying = onNavigateToNowPlaying,
                         createRequestKey = stationCreateRequest,
                     )
-                } else {
-                    PlaylistsScreen(
+                    1 -> PlaylistsScreen(
                         onOpenPlaylist = onOpenPlaylist,
                         onNavigateToNowPlaying = onNavigateToNowPlaying,
                         createRequestKey = playlistCreateRequest,
                     )
+                    else -> HistoryScreen(onNavigateToNowPlaying = onNavigateToNowPlaying)
                 }
             }
         }
@@ -82,7 +86,7 @@ fun StationsAndPlaylistsScreen(
 }
 
 @Composable
-private fun LibraryHeader(onAdd: () -> Unit) {
+private fun LibraryHeader(onAdd: (() -> Unit)?) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -109,13 +113,15 @@ private fun LibraryHeader(onAdd: () -> Unit) {
             )
         }
 
-        IconButton(onClick = onAdd) {
-            Icon(
-                imageVector = Icons.Default.Add,
-                contentDescription = "Create",
-                tint = HelixAccent,
-                modifier = Modifier.size(30.dp),
-            )
+        if (onAdd != null) {
+            IconButton(onClick = onAdd) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = "Create",
+                    tint = HelixAccent,
+                    modifier = Modifier.size(30.dp),
+                )
+            }
         }
     }
 }
@@ -141,6 +147,12 @@ private fun LibraryTabs(
             label = "Playlists",
             selected = selectedTab == 1,
             onClick = { onSelectTab(1) },
+            modifier = Modifier.weight(1f),
+        )
+        LibraryTab(
+            label = "History",
+            selected = selectedTab == 2,
+            onClick = { onSelectTab(2) },
             modifier = Modifier.weight(1f),
         )
     }

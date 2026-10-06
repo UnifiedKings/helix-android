@@ -5,6 +5,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.QueuePlayNext
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -14,6 +15,16 @@ import androidx.compose.ui.unit.dp
 
 val HelixMenuShape = RoundedCornerShape(18.dp)
 
+/** Menu item that queues a song to play right after the current one. */
+@Composable
+fun PlayNextMenuItem(onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = { Text("Play next") },
+        leadingIcon = { Icon(Icons.Default.QueuePlayNext, contentDescription = null) },
+        onClick = onClick,
+    )
+}
+
 @Composable
 fun HelixTrackOverflowMenu(
     expanded: Boolean,
@@ -22,6 +33,7 @@ fun HelixTrackOverflowMenu(
     onAddToQueue: () -> Unit,
     onAddToSubsonic: () -> Unit,
     showAddToSubsonic: Boolean = true,
+    onPlayNext: (() -> Unit)? = null,
 ) {
     DropdownMenu(
         expanded = expanded,
@@ -33,8 +45,9 @@ fun HelixTrackOverflowMenu(
             leadingIcon = { Icon(Icons.Default.PlayArrow, contentDescription = null) },
             onClick = onPlay,
         )
+        if (onPlayNext != null) PlayNextMenuItem(onClick = onPlayNext)
         DropdownMenuItem(
-            text = { Text("Add to Queue") },
+            text = { Text("Add to queue") },
             leadingIcon = { Icon(Icons.Default.QueueMusic, contentDescription = null) },
             onClick = onAddToQueue,
         )

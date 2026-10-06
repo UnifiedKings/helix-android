@@ -15,25 +15,30 @@ object HelixTransport {
     @Volatile
     private var lastNowId: String? = null
 
+    /**
+     * While true the phone follows the backend's current item but stays silent, until the user
+     * asks to listen here (Play, or starting anything). Set when the service starts, so opening
+     * the app never interrupts or doubles up audio on another device, and whenever playback is
+     * paused on this phone, so another device advancing the shared queue (which marks it
+     * playing again) can't restart the phone on its own.
+     */
     @Volatile
-    private var lastSourceLower: String = ""
-
-    @Volatile
-    var needsInitialSync: Boolean = true
+    var waitingForLocalPlay: Boolean = true
         private set
 
-    fun markInitialSynced() {
-        needsInitialSync = false
+    /** The user asked to listen on this phone. */
+    fun allowLocalPlayback() {
+        waitingForLocalPlay = false
+    }
+
+    /** The user paused on this phone: stay silent until they press Play here again. */
+    fun holdLocalPlayback() {
+        waitingForLocalPlay = true
     }
 
     fun resetSyncState() {
         lastNowId = null
-        lastSourceLower = ""
-        needsInitialSync = true
-    }
-
-    fun isStationPlayback(): Boolean {
-        return lastSourceLower.contains("station")
+        waitingForLocalPlay = true
     }
 
     private fun streamUrl(baseUrl: String, queueItemId: String): String {
@@ -52,96 +57,109 @@ object HelixTransport {
         }
 
         val state = JSONObject(resp.body().orEmpty())
-        val now = state.optJSONObject("now_playing")
-        if (now == null) {
-            Log.w("HELIX_PLAYER", "No now_playing in playback/state; clearing local Media3 state")
-            lastNowId = null
-            lastSourceLower = ""
-            PlaybackController.clear(ctx)
-            return
-        }
+        PlayerStateStore.publish(state)
 
-        val qid = now.optString("id", now.optString("queue_item_id", ""))
-        if (qid.isBlank()) {
-            Log.w("HELIX_PLAYER", "now_playing missing id; clearing local Media3 state")
-            lastNowId = null
-            lastSourceLower = ""
-            PlaybackController.clear(ctx)
-            return
-        }
-
-        val queue = state.optJSONArray("queue") ?: JSONArray()
-        var currentIsQueued = false
-        for (i in 0 until queue.length()) {
-            val item = queue.optJSONObject(i) ?: continue
-            val itemId = item.optString("id", item.optString("queue_item_id", ""))
-            if (itemId == qid) {
-                currentIsQueued = true
-                break
-            }
-        }
-
-        if (!currentIsQueued) {
-            Log.w(
-                "HELIX_PLAYER",
-                "Rejecting orphan now_playing=$qid because it is not present in backend queue; clearing Media3",
-            )
-            lastNowId = null
-            lastSourceLower = ""
-            PlaybackController.clear(ctx)
-            return
-        }
-
-        val isPlaying = state.optBoolean("is_playing", true)
-        lastSourceLower = now.optString("source", "").lowercase()
-
-        val title = now.optString("title", "")
-        val artist = now.optString("artist", "")
-        val album = now.optString("album", "")
-        val art = now.optString("art_url", "")
-        val absArt = HelixImages.absoluteUrl(baseUrl, art)
-        val artworkData = if (absArt.isNotBlank()) {
-            withContext(Dispatchers.IO) { HelixImages.fetchArtworkBytes(ctx, absArt) }
-        } else {
-            null
-        }
-
-        val currentItem = QueueMediaItem(
-            queueItemId = qid,
-            url = streamUrl(baseUrl, qid),
-            title = title,
-            artist = artist,
-            album = album,
-            artworkUrl = absArt,
-            artworkData = artworkData,
+        val action = decideSync(
+            state = state,
+            baseUrl = baseUrl,
+            loadedItemId = lastNowId,
+            forceLoad = forceLoadStream || forceRestart,
+            playOnDevice = DevicePlayback.isEnabled(ctx),
+            waitingForLocalPlay = waitingForLocalPlay,
         )
-
-        val shouldLoad = forceLoadStream || forceRestart || (lastNowId != qid)
-        lastNowId = qid
-
-        if (shouldLoad) {
-            Log.d("HELIX_PLAYER", "Applying current-only Media3 item now=$qid")
-            PlaybackController.setCurrentItem(ctx, currentItem, autoplay = isPlaying)
-        } else {
-            if (isPlaying) PlaybackController.resume(ctx) else PlaybackController.pause(ctx)
+        when (action) {
+            is SyncAction.Clear -> {
+                Log.w("HELIX_PLAYER", "${action.reason}; clearing local Media3 state")
+                lastNowId = null
+                PlaybackController.clear(ctx)
+            }
+            is SyncAction.Unload -> {
+                // Remote mode: screens and the session's RemoteSessionPlayer show the shared state
+                // (already published above); PlaybackService unloaded local audio when the mode
+                // switched. Forget the loaded item so turning playback back on reloads it.
+                lastNowId = null
+            }
+            is SyncAction.Load -> {
+                Log.d("HELIX_PLAYER", "Applying current-only Media3 item now=${action.item.queueItemId}")
+                lastNowId = action.item.queueItemId
+                PlaybackController.setCurrentItem(ctx, action.item, autoplay = action.autoplay)
+            }
+            is SyncAction.SetPlaying -> {
+                if (action.playing) PlaybackController.resume(ctx) else PlaybackController.pause(ctx)
+            }
         }
 
         if (forceRestart) Log.d("HELIX_PLAYER", "forceRestart=true")
     }
 
-    suspend fun refreshAndPlayCurrent(ctx: Context, forceRestart: Boolean = false) {
-        refreshAndSync(ctx, forceLoadStream = forceRestart, forceRestart = forceRestart)
+    /** What the local player should do with a backend state snapshot. */
+    sealed class SyncAction {
+        /** Nothing valid to play (no current item, or one missing from the queue). */
+        data class Clear(val reason: String) : SyncAction()
+
+        /** This phone is a remote ("Play on this device" off): play nothing locally. */
+        data object Unload : SyncAction()
+
+        /** Load the backend's current item, starting it only if [autoplay]. */
+        data class Load(val item: QueueMediaItem, val autoplay: Boolean) : SyncAction()
+
+        /** The current item is already loaded; just play or pause it. */
+        data class SetPlaying(val playing: Boolean) : SyncAction()
     }
 
-    suspend fun backendEndedAndRefresh(ctx: Context) {
-        val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-        Log.d("HELIX_PLAYER", "POST /api/playback/ended")
-        withContext(Dispatchers.IO) { api.ended() }
-        refreshAndSync(ctx, forceLoadStream = true)
+    /**
+     * Decide how the local player follows a backend state snapshot. Pure (no Android or
+     * network calls) so the sync rules can be unit tested.
+     *
+     * The phone plays only when the backend says playing and the user hasn't paused here or
+     * just opened the app ([waitingForLocalPlay]); otherwise it follows the current item silently.
+     */
+    fun decideSync(
+        state: JSONObject,
+        baseUrl: String,
+        loadedItemId: String?,
+        forceLoad: Boolean,
+        playOnDevice: Boolean,
+        waitingForLocalPlay: Boolean,
+    ): SyncAction {
+        val now = state.optJSONObject("now_playing")
+            ?: return SyncAction.Clear("No now_playing in playback/state")
+
+        val qid = now.optString("id", now.optString("queue_item_id", ""))
+        if (qid.isBlank()) return SyncAction.Clear("now_playing missing id")
+
+        val queue = state.optJSONArray("queue") ?: JSONArray()
+        val currentIsQueued = (0 until queue.length()).any { i ->
+            val item = queue.optJSONObject(i) ?: return@any false
+            item.optString("id", item.optString("queue_item_id", "")) == qid
+        }
+        if (!currentIsQueued) {
+            return SyncAction.Clear("Rejecting orphan now_playing=$qid not present in backend queue")
+        }
+
+        if (!playOnDevice) return SyncAction.Unload
+
+        val playLocally = state.optBoolean("is_playing", true) && !waitingForLocalPlay
+        if (!forceLoad && loadedItemId == qid) {
+            return SyncAction.SetPlaying(playLocally)
+        }
+
+        val item = QueueMediaItem(
+            queueItemId = qid,
+            url = streamUrl(baseUrl, qid),
+            title = now.optString("title", ""),
+            artist = now.optString("artist", ""),
+            album = now.optString("album", ""),
+            // Media3's bitmap loader fetches the artwork (with the session cookie) asynchronously.
+            artworkUrl = HelixImages.absoluteUrl(baseUrl, now.optString("art_url", "")),
+        )
+        return SyncAction.Load(item, autoplay = playLocally)
     }
 
-    fun parseQueueFromState(stateJson: String): Pair<NowPlayingUi?, List<QueueItemUi>> {
-        val root = JSONObject(stateJson)
+    fun parseQueueFromState(stateJson: String): Pair<NowPlayingUi?, List<QueueItemUi>> =
+        parseQueueFromState(JSONObject(stateJson))
+
+    fun parseQueueFromState(root: JSONObject): Pair<NowPlayingUi?, List<QueueItemUi>> {
         val now = root.optJSONObject("now_playing")
         val arr = root.optJSONArray("queue") ?: JSONArray()
         val items = ArrayList<QueueItemUi>(arr.length())

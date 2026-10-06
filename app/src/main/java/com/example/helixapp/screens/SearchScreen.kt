@@ -31,11 +31,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -43,7 +40,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,245 +55,25 @@ import com.example.helixapp.ui.theme.HelixAccent
 import com.example.helixapp.ui.theme.HelixBorder
 import com.example.helixapp.ui.theme.HelixSurfaceRaised
 import com.example.helixapp.helix.HelixTrackRequests
-import com.example.helixapp.playback.HelixTransport
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
+import com.example.helixapp.playback.PlaybackActions
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import org.json.JSONObject
-private sealed class SearchFilter(val label: String) {
-    data object Songs : SearchFilter("Songs")
-    data object Artists : SearchFilter("Artists")
-    data object Albums : SearchFilter("Albums")
-    data object All : SearchFilter("All")
-}
 
-/**
- * Search screen.
- *
- * - Normal tab usage: addOnlyMode=false (shows Play / +Queue actions on songs)
- * - Add-to-playlist overlay: addOnlyMode=true (songs-only, shows only "Add")
- *
- * If you pass a SnackbarHostState from the overlay, notifications will render ABOVE the overlay
- * instead of behind it.
- */
+/** The Search tab: songs, albums and artists, with recently played results while it's empty. */
 @Composable
 fun SearchScreen(
     onOpenAlbum: (SearchAlbum) -> Unit,
     onOpenArtist: (SearchArtist) -> Unit = {},
-    onAddToPlaylist: ((SearchSong) -> Unit)? = null,
-    addOnlyMode: Boolean = false,
-    snackbarHostState: SnackbarHostState? = null,
     onNavigateToNowPlaying: () -> Unit = {},
+    viewModel: SearchViewModel = helixViewModel { SearchViewModel(it) },
 ) {
     val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
+    val state by viewModel.state.collectAsStateWithLifecycle()
 
-    var query by remember { mutableStateOf("") }
-    var status by remember { mutableStateOf("Idle") }
-    var loading by remember { mutableStateOf(false) }
-    var songResults by remember { mutableStateOf(emptyList<SearchSong>()) }
-    var albumResults by remember { mutableStateOf(emptyList<SearchAlbum>()) }
-    var artistResults by remember { mutableStateOf(emptyList<SearchArtist>()) }
-    var lastSearchedTerm by remember { mutableStateOf("") }
-    var filter by remember {
-        mutableStateOf<SearchFilter>(SearchFilter.Songs)
-    }
+    // Something may have been played from search since the screen was last shown.
+    LaunchedEffect(Unit) { viewModel.refreshRecents() }
 
-    val albumArtistByTitle = remember(albumResults) {
-        albumResults
-            .filter { it.title.isNotBlank() && it.artist.isNotBlank() }
-            .associate { it.title.trim().lowercase() to it.artist.trim() }
-    }
-
-    val snack = snackbarHostState ?: remember { SnackbarHostState() }
-    val appCtx = ctx.applicationContext
-    var recents by remember { mutableStateOf(RecentSearchPlay.get(appCtx)) }
-
-    val subsonicSongAvailable = remember { androidx.compose.runtime.mutableStateMapOf<String, Boolean>() }
-    val subsonicAlbumAvailable = remember { androidx.compose.runtime.mutableStateMapOf<String, Boolean>() }
-    var resolveVersion by remember { mutableStateOf(0) }
-
-    fun clearToRecents() {
-        loading = false
-        songResults = emptyList()
-        albumResults = emptyList()
-        artistResults = emptyList()
-        status = "Idle"
-        lastSearchedTerm = ""
-        if (!addOnlyMode) recents = RecentSearchPlay.get(appCtx)
-    }
-
-    fun resolveSubsonicAvailability(
-        songs: List<SearchSong>,
-        albums: List<SearchAlbum>,
-        baseUrl: String,
-        version: Int,
-        limit: Int = 25,
-    ) {
-        if (songs.isEmpty() && albums.isEmpty()) return
-        if (HelixPrefs.getSessionToken(ctx).isNullOrBlank()) return
-
-        val songSlice = songs.take(limit)
-        val albumSlice = albums.take(limit)
-
-        scope.launch {
-            try {
-                val api = HelixClient.create(ctx, baseUrl)
-                val payload = JSONObject().apply {
-                    put("songs", JSONArray().apply {
-                        for (s in songSlice) {
-                            put(JSONObject().apply {
-                                put("key", "song:" + s.videoId)
-                                put("title", s.title)
-                                put("artist", s.artist)
-                            })
-                        }
-                    })
-                    put("albums", JSONArray().apply {
-                        for (a in albumSlice) {
-                            put(JSONObject().apply {
-                                put("key", "album:" + a.browseId)
-                                put("title", a.title)
-                                put("artist", a.artist)
-                            })
-                        }
-                    })
-                }
-
-                val rb = payload.toString().toRequestBody("application/json".toMediaType())
-                val resp = withContext(Dispatchers.IO) { api.subsonicResolve(rb) }
-                if (!resp.isSuccessful || version != resolveVersion) return@launch
-
-                val obj = JSONObject(resp.body().orEmpty())
-                obj.optJSONObject("songs")?.let { songsObj ->
-                    songsObj.keys().forEach { key ->
-                        subsonicSongAvailable[key] = songsObj.optJSONObject(key)?.optBoolean("available", false) ?: false
-                    }
-                }
-                obj.optJSONObject("albums")?.let { albumsObj ->
-                    albumsObj.keys().forEach { key ->
-                        subsonicAlbumAvailable[key] = albumsObj.optJSONObject(key)?.optBoolean("available", false) ?: false
-                    }
-                }
-            } catch (_: Exception) {
-                // Availability is best-effort and should never block search.
-            }
-        }
-    }
-
-    fun triggerSearch(q: String) {
-        if (q.isBlank()) {
-            clearToRecents()
-            return
-        }
-        if (HelixPrefs.getSessionToken(ctx).isNullOrBlank()) {
-            status = "Not logged in — go to Settings"
-            return
-        }
-
-        loading = true
-        songResults = emptyList()
-        albumResults = emptyList()
-        artistResults = emptyList()
-        status = "Searching…"
-        lastSearchedTerm = q
-
-        resolveVersion += 1
-        val myResolveVersion = resolveVersion
-        subsonicSongAvailable.clear()
-        subsonicAlbumAvailable.clear()
-
-        scope.launch {
-            try {
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val (resp, artistResp) = withContext(Dispatchers.IO) {
-                    val searchDeferred = async { api.ytmusicSearch(q) }
-                    val artistDeferred = async { api.ytmusicSearchArtists(q) }
-                    searchDeferred.await() to artistDeferred.await()
-                }
-                val body = resp.body().orEmpty()
-                val artistBody = artistResp.body().orEmpty()
-
-                if (resp.code() == 401 || artistResp.code() == 401) {
-                    status = "Session expired — log in again"
-                    return@launch
-                }
-                if (!resp.isSuccessful) {
-                    status = "Search failed (HTTP ${resp.code()})"
-                    return@launch
-                }
-                if (!artistResp.isSuccessful) {
-                    status = "Artist search failed (HTTP ${artistResp.code()})"
-                    return@launch
-                }
-
-                val songs = parseSongs(body)
-                val albums = parseAlbums(body)
-                val artists = parseArtists(artistBody)
-                songResults = songs
-                albumResults = albums
-                artistResults = artists
-
-                resolveSubsonicAvailability(
-                    songs = songs,
-                    albums = albums,
-                    baseUrl = HelixPrefs.getBaseUrl(ctx),
-                    version = myResolveVersion,
-                )
-
-                status = if (songs.isEmpty() && albums.isEmpty() && artists.isEmpty()) "No results" else "Done"
-            } catch (e: Exception) {
-                status = "Search error: ${e.javaClass.simpleName}"
-            } finally {
-                loading = false
-            }
-        }
-    }
-
-    LaunchedEffect(addOnlyMode) {
-        snapshotFlow { query.trim() }
-            .debounce(400)
-            .distinctUntilChanged()
-            .collectLatest { q ->
-                if (q.isBlank()) clearToRecents()
-                else if (q != lastSearchedTerm) triggerSearch(q)
-            }
-    }
-
-    LaunchedEffect(recents, query.trim()) {
-        val q = query.trim()
-        if (!addOnlyMode && q.isBlank() && recents.isNotEmpty()) {
-            val songs = recents.filter { it.kind == RecentSearchPlay.Kind.SONG }.map {
-                SearchSong(
-                    title = it.title,
-                    artist = it.artist,
-                    album = it.album,
-                    thumbnailUrl = it.thumbnailUrl,
-                    videoId = if (it.source.equals("subsonic", ignoreCase = true)) "" else it.id,
-                    source = it.source,
-                    subsonicSongId = if (it.source.equals("subsonic", ignoreCase = true)) it.id else it.subsonicSongId,
-                )
-            }
-            val albums = recents.filter { it.kind == RecentSearchPlay.Kind.ALBUM }.map {
-                SearchAlbum(it.title, it.artist, it.year, it.thumbnailUrl, it.id)
-            }
-            resolveVersion += 1
-            val version = resolveVersion
-            subsonicSongAvailable.clear()
-            subsonicAlbumAvailable.clear()
-            resolveSubsonicAvailability(songs, albums, HelixPrefs.getBaseUrl(ctx), version)
-        }
-    }
-
-    Scaffold(snackbarHost = { SnackbarHost(snack) }) { padding: PaddingValues ->
+    Scaffold { padding: PaddingValues ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -310,17 +86,15 @@ fun SearchScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                if (!addOnlyMode) {
-                    Image(
-                        painter = painterResource(id = R.drawable.helix_logo),
-                        contentDescription = "Helix",
-                        contentScale = ContentScale.Fit,
-                        colorFilter = ColorFilter.tint(HelixAccent),
-                        modifier = Modifier.size(30.dp),
-                    )
-                }
+                Image(
+                    painter = painterResource(id = R.drawable.helix_logo),
+                    contentDescription = "Helix",
+                    contentScale = ContentScale.Fit,
+                    colorFilter = ColorFilter.tint(HelixAccent),
+                    modifier = Modifier.size(30.dp),
+                )
                 Text(
-                    text = if (addOnlyMode) "Add songs" else "Search",
+                    text = "Search",
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -329,13 +103,13 @@ fun SearchScreen(
             Spacer(Modifier.height(16.dp))
 
             OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                placeholder = { Text(if (addOnlyMode) "Find a song" else "What do you want to play?") },
+                value = state.query,
+                onValueChange = viewModel::setQuery,
+                placeholder = { Text("What do you want to play?") },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 trailingIcon = {
-                    if (query.isNotEmpty()) {
-                        IconButton(onClick = { query = "" }) {
+                    if (state.query.isNotEmpty()) {
+                        IconButton(onClick = { viewModel.setQuery("") }) {
                             Icon(Icons.Filled.Close, contentDescription = "Clear search")
                         }
                     }
@@ -347,15 +121,10 @@ fun SearchScreen(
                     .height(58.dp),
             )
 
-            if (!addOnlyMode) {
-                Spacer(Modifier.height(10.dp))
-                SearchFilterBar(
-                    selected = filter,
-                    onSelected = { filter = it },
-                )
-            }
+            Spacer(Modifier.height(10.dp))
+            SearchFilterBar(selected = state.filter, onSelected = viewModel::setFilter)
 
-            if (loading) {
+            if (state.loading) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -365,10 +134,9 @@ fun SearchScreen(
                     CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
                 }
             } else {
-                val errorOrEmpty = status != "Idle" && status != "Done" && status != "Searching…"
-                if (errorOrEmpty) {
+                state.message?.let { message ->
                     Text(
-                        text = status,
+                        text = message,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 14.dp),
@@ -377,57 +145,39 @@ fun SearchScreen(
             }
 
             val baseUrl = HelixPrefs.getBaseUrl(ctx)
-            val qTrim = query.trim()
+
+            @Composable
+            fun Song(song: SearchSong) = SongRow(
+                song = song,
+                baseUrl = baseUrl,
+                subsonicAvailable = state.songInSubsonic(song),
+                onAddToSubsonic = viewModel::addSongToSubsonic,
+                onNavigateToNowPlaying = onNavigateToNowPlaying,
+            )
+
+            @Composable
+            fun Album(album: SearchAlbum) = AlbumRow(
+                album = album,
+                baseUrl = baseUrl,
+                subsonicAvailable = state.albumInSubsonic(album),
+                onOpen = { onOpenAlbum(album) },
+                onAddToSubsonic = viewModel::addAlbumToSubsonic,
+                onNavigateToNowPlaying = onNavigateToNowPlaying,
+            )
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),
             ) {
-                if (!addOnlyMode && qTrim.isBlank()) {
-                    if (recents.isNotEmpty()) {
+                if (state.query.isBlank()) {
+                    if (state.recents.isNotEmpty()) {
                         item {
-                            SearchSectionHeader(
-                                title = "Recent",
-                                actionLabel = "Clear",
-                                onAction = {
-                                    RecentSearchPlay.clear(appCtx)
-                                    recents = emptyList()
-                                },
-                            )
+                            SearchSectionHeader(title = "Recent", actionLabel = "Clear", onAction = viewModel::clearRecents)
                         }
-                        items(recents, key = { it.kind.name + ":" + it.id }) { recent ->
+                        items(state.recents, key = { it.kind.name + ":" + it.id }) { recent ->
                             when (recent.kind) {
-                                RecentSearchPlay.Kind.SONG -> SongRow(
-                                    song = SearchSong(
-                                        title = recent.title,
-                                        artist = recent.artist,
-                                        album = recent.album,
-                                        thumbnailUrl = recent.thumbnailUrl,
-                                        videoId = recent.id,
-                                    ),
-                                    baseUrl = baseUrl,
-                                    snack = snack,
-                                    showOverflow = true,
-                                    subsonicAvailable = subsonicSongAvailable["song:" + recent.id] == true,
-                                    albumArtistByTitle = albumArtistByTitle,
-                                    onNavigateToNowPlaying = onNavigateToNowPlaying,
-                                )
-                                RecentSearchPlay.Kind.ALBUM -> AlbumRow(
-                                    album = SearchAlbum(
-                                        recent.title,
-                                        recent.artist,
-                                        recent.year,
-                                        recent.thumbnailUrl,
-                                        recent.id,
-                                    ),
-                                    baseUrl = baseUrl,
-                                    snack = snack,
-                                    subsonicAvailable = subsonicAlbumAvailable["album:" + recent.id] == true,
-                                    onOpen = {
-                                        onOpenAlbum(SearchAlbum(recent.title, recent.artist, recent.year, recent.thumbnailUrl, recent.id))
-                                    },
-                                    onNavigateToNowPlaying = onNavigateToNowPlaying,
-                                )
+                                RecentSearchPlay.Kind.SONG -> Song(recent.toSearchSong())
+                                RecentSearchPlay.Kind.ALBUM -> Album(recent.toSearchAlbum())
                             }
                         }
                     } else {
@@ -440,79 +190,27 @@ fun SearchScreen(
                             )
                         }
                     }
-                } else if (addOnlyMode) {
-                    items(songResults) { song ->
-                        SongRow(
-                            song = song,
-                            baseUrl = baseUrl,
-                            snack = snack,
-                            showOverflow = false,
-                            subsonicAvailable = subsonicSongAvailable["song:" + song.videoId] == true,
-                            albumArtistByTitle = albumArtistByTitle,
-                            onNavigateToNowPlaying = onNavigateToNowPlaying,
-                            extraActionLabel = "Add",
-                            onExtraAction = { onAddToPlaylist?.invoke(it) },
-                        )
-                    }
                 } else {
-                    when (filter) {
+                    when (state.filter) {
                         SearchFilter.All -> {
-                            if (artistResults.isNotEmpty()) {
+                            if (state.artists.isNotEmpty()) {
                                 item { SearchSectionHeader("Artists") }
-                                items(artistResults.take(3)) { artist -> ArtistRow(artist) { onOpenArtist(artist) } }
+                                items(state.artists.take(3)) { artist -> ArtistRow(artist) { onOpenArtist(artist) } }
                                 item { Spacer(Modifier.height(14.dp)) }
                             }
-                            if (albumResults.isNotEmpty()) {
+                            if (state.albums.isNotEmpty()) {
                                 item { SearchSectionHeader("Albums") }
-                                items(albumResults.take(3)) { album ->
-                                    AlbumRow(
-                                        album,
-                                        baseUrl,
-                                        snack,
-                                        subsonicAlbumAvailable["album:" + album.browseId] == true,
-                                        { onOpenAlbum(album) },
-                                        onNavigateToNowPlaying,
-                                    )
-                                }
+                                items(state.albums.take(3)) { album -> Album(album) }
                                 item { Spacer(Modifier.height(14.dp)) }
                             }
-                            if (songResults.isNotEmpty()) {
+                            if (state.songs.isNotEmpty()) {
                                 item { SearchSectionHeader("Songs") }
-                                items(songResults) { song ->
-                                    SongRow(
-                                        song,
-                                        baseUrl,
-                                        snack,
-                                        true,
-                                        subsonicSongAvailable["song:" + song.videoId] == true,
-                                        albumArtistByTitle,
-                                        onNavigateToNowPlaying = onNavigateToNowPlaying,
-                                    )
-                                }
+                                items(state.songs) { song -> Song(song) }
                             }
                         }
-                        SearchFilter.Artists -> items(artistResults) { artist -> ArtistRow(artist) { onOpenArtist(artist) } }
-                        SearchFilter.Albums -> items(albumResults) { album ->
-                            AlbumRow(
-                                album,
-                                baseUrl,
-                                snack,
-                                subsonicAlbumAvailable["album:" + album.browseId] == true,
-                                { onOpenAlbum(album) },
-                                onNavigateToNowPlaying,
-                            )
-                        }
-                        SearchFilter.Songs -> items(songResults) { song ->
-                            SongRow(
-                                song,
-                                baseUrl,
-                                snack,
-                                true,
-                                subsonicSongAvailable["song:" + song.videoId] == true,
-                                albumArtistByTitle,
-                                onNavigateToNowPlaying = onNavigateToNowPlaying,
-                            )
-                        }
+                        SearchFilter.Artists -> items(state.artists) { artist -> ArtistRow(artist) { onOpenArtist(artist) } }
+                        SearchFilter.Albums -> items(state.albums) { album -> Album(album) }
+                        SearchFilter.Songs -> items(state.songs) { song -> Song(song) }
                     }
                 }
             }
@@ -600,12 +298,8 @@ private fun SearchSectionHeader(
 private fun SongRow(
     song: SearchSong,
     baseUrl: String,
-    snack: SnackbarHostState,
-    showOverflow: Boolean,
     subsonicAvailable: Boolean,
-    albumArtistByTitle: Map<String, String>,
-    extraActionLabel: String? = null,
-    onExtraAction: ((SearchSong) -> Unit)? = null,
+    onAddToSubsonic: (SearchSong, artUrl: String) -> Unit,
     onNavigateToNowPlaying: () -> Unit = {},
 ) {
     val ctx = LocalContext.current
@@ -613,30 +307,21 @@ private fun SongRow(
     val thumb = HelixImages.absoluteUrl(baseUrl, song.thumbnailUrl)
 
     fun playSong() {
-        scope.launch {
-            try {
-                HelixPrefs.setLastStationName(ctx, null)
-                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                val payload = HelixTrackRequests.playOrQueueBodyFromSearchSong(HelixPrefs.getBaseUrl(ctx), song)
-                val resp = withContext(Dispatchers.IO) { api.playTrack(payload.toJsonRequestBody()) }
-                if (!resp.isSuccessful) {
-                    snack.showNonBlocking(scope, "Play failed (HTTP ${resp.code()})")
-                    return@launch
-                }
-                RecentSearchPlay.addSong(ctx.applicationContext, song)
-                HelixTransport.refreshAndPlayCurrent(ctx)
-            } catch (e: Exception) {
-                snack.showNonBlocking(scope, "Play error: ${e.javaClass.simpleName}")
-            } finally {
-                onNavigateToNowPlaying()
-            }
+        scope.launchPlaybackAction(
+            failureAction = "Play",
+            overlayMessage = "Starting track…",
+            onSuccess = onNavigateToNowPlaying,
+        ) {
+            val payload = HelixTrackRequests.playOrQueueBodyFromSearchSong(HelixPrefs.getBaseUrl(ctx), song)
+            PlaybackActions.playTrack(ctx, payload)
+            RecentSearchPlay.addSong(ctx.applicationContext, song)
         }
     }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = extraActionLabel == null) { playSong() }
+            .clickable { playSong() }
             .padding(vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -678,71 +363,46 @@ private fun SongRow(
             }
         }
 
-        if (extraActionLabel != null && onExtraAction != null) {
-            TextButton(onClick = { onExtraAction(song) }) { Text(extraActionLabel) }
-        } else if (showOverflow) {
-            Box {
-                var expanded by remember { mutableStateOf(false) }
-                IconButton(onClick = { expanded = true }) {
-                    Icon(Icons.Filled.MoreVert, contentDescription = "More actions")
-                }
-                HelixTrackOverflowMenu(
-                    expanded = expanded,
-                    onDismissRequest = { expanded = false },
-                    onPlay = {
-                        expanded = false
-                        playSong()
-                    },
-                    onAddToQueue = {
-                        expanded = false
-                        scope.launch {
-                            try {
-                                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                                val bodyJson = HelixTrackRequests.playOrQueueBodyFromSearchSong(HelixPrefs.getBaseUrl(ctx), song)
-                                val resp = withContext(Dispatchers.IO) { api.queueAppendTrack(bodyJson.toJsonRequestBody()) }
-                                if (!resp.isSuccessful) {
-                                    snack.showNonBlocking(scope, "Queue failed (HTTP ${resp.code()})")
-                                    return@launch
-                                }
-                                RecentSearchPlay.addSong(ctx.applicationContext, song)
-                                snack.showNonBlocking(scope, "Queued: ${song.title}")
-                            } catch (e: Exception) {
-                                snack.showNonBlocking(scope, "Queue error: ${e.javaClass.simpleName}")
-                            }
-                        }
-                    },
-                    onAddToSubsonic = {
-                        expanded = false
-                        scope.launch {
-                            try {
-                                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                                val artistForSubsonic = albumArtistByTitle[song.album.trim().lowercase()] ?: song.artist
-                                val trackArtist = song.artist.trim().let { artist ->
-                                    val lower = artist.lowercase()
-                                    if (artist.isBlank() || lower.contains("view") || lower.contains("play")) artistForSubsonic else artist
-                                }
-                                val payload = JSONObject().apply {
-                                    put("yt_video_id", song.videoId)
-                                    put("title", song.title)
-                                    put("artist", trackArtist)
-                                    put("album_artist", artistForSubsonic)
-                                    if (song.album.isNotBlank()) put("album", song.album)
-                                    if (thumb.isNotBlank()) put("art_url", thumb)
-                                }
-                                val resp = withContext(Dispatchers.IO) { api.subsonicAddTrack(payload.toJsonRequestBody()) }
-                                if (!resp.isSuccessful) {
-                                    snack.showNonBlocking(scope, "Add to Subsonic failed (HTTP ${resp.code()})")
-                                    return@launch
-                                }
-                                snack.showNonBlocking(scope, "Added to Subsonic: ${song.title}")
-                            } catch (e: Exception) {
-                                snack.showNonBlocking(scope, "Add to Subsonic error: ${e.javaClass.simpleName}")
-                            }
-                        }
-                    },
-                    showAddToSubsonic = !song.isFromSubsonic,
-                )
+        Box {
+            var expanded by remember { mutableStateOf(false) }
+            IconButton(onClick = { expanded = true }) {
+                Icon(Icons.Filled.MoreVert, contentDescription = "More actions")
             }
+            HelixTrackOverflowMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+                onPlay = {
+                    expanded = false
+                    playSong()
+                },
+                onPlayNext = {
+                    expanded = false
+                    scope.launchPlaybackAction(
+                        failureAction = "Play next",
+                        successMessage = "Playing next: ${song.title}",
+                    ) {
+                        val bodyJson = HelixTrackRequests.playOrQueueBodyFromSearchSong(HelixPrefs.getBaseUrl(ctx), song)
+                        PlaybackActions.playNext(ctx, bodyJson)
+                        RecentSearchPlay.addSong(ctx.applicationContext, song)
+                    }
+                },
+                onAddToQueue = {
+                    expanded = false
+                    scope.launchPlaybackAction(
+                        failureAction = "Queue",
+                        successMessage = "Queued: ${song.title}",
+                    ) {
+                        val bodyJson = HelixTrackRequests.playOrQueueBodyFromSearchSong(HelixPrefs.getBaseUrl(ctx), song)
+                        PlaybackActions.queueTrack(ctx, bodyJson)
+                        RecentSearchPlay.addSong(ctx.applicationContext, song)
+                    }
+                },
+                onAddToSubsonic = {
+                    expanded = false
+                    onAddToSubsonic(song, thumb)
+                },
+                showAddToSubsonic = !song.isFromSubsonic,
+            )
         }
     }
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
@@ -752,9 +412,9 @@ private fun SongRow(
 private fun AlbumRow(
     album: SearchAlbum,
     baseUrl: String,
-    snack: SnackbarHostState,
     subsonicAvailable: Boolean,
     onOpen: (() -> Unit)? = null,
+    onAddToSubsonic: (SearchAlbum, request: JSONObject) -> Unit,
     onNavigateToNowPlaying: () -> Unit = {},
 ) {
     val ctx = LocalContext.current
@@ -813,34 +473,16 @@ private fun AlbumRow(
                     onClick = {
                         expanded = false
                         if (album.browseId.isBlank()) {
-                            scope.launch { snack.showNonBlocking(scope, "Album has no browseId") }
+                            UserMessages.show("Album has no browseId")
                             return@DropdownMenuItem
                         }
                         RecentSearchPlay.addAlbum(ctx.applicationContext, album)
-                        showLoadingOverlay("Starting album…")
-                        scope.launch {
-                            try {
-                                HelixPrefs.setLastStationName(ctx, null)
-                                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                                val payload = JSONObject().apply {
-                                    put("browse_id", album.browseId)
-                                    if (album.title.isNotBlank()) put("title", album.title)
-                                    if (album.artist.isNotBlank()) put("artist", album.artist)
-                                    if (thumb.isNotBlank()) put("art_url", thumb)
-                                }
-                                val resp = withContext(Dispatchers.IO) { api.playAlbum(payload.toJsonRequestBody()) }
-                                if (!resp.isSuccessful) {
-                                    snack.showNonBlocking(scope, "Play failed (HTTP ${resp.code()})")
-                                    return@launch
-                                }
-                                showLoadingOverlay("Loading now playing…")
-                                HelixTransport.refreshAndPlayCurrent(ctx)
-                            } catch (e: Exception) {
-                                snack.showNonBlocking(scope, "Play error: ${e.javaClass.simpleName}")
-                            } finally {
-                                onNavigateToNowPlaying()
-                                hideLoadingOverlay()
-                            }
+                        scope.launchPlaybackAction(
+                            failureAction = "Play",
+                            overlayMessage = "Starting album…",
+                            onSuccess = onNavigateToNowPlaying,
+                        ) {
+                            PlaybackActions.playAlbum(ctx, albumPayload(album, thumb))
                         }
                     },
                 )
@@ -848,24 +490,11 @@ private fun AlbumRow(
                     text = { Text("Add to queue") },
                     onClick = {
                         expanded = false
-                        scope.launch {
-                            try {
-                                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                                val payload = JSONObject().apply {
-                                    put("browse_id", album.browseId)
-                                    if (album.title.isNotBlank()) put("title", album.title)
-                                    if (album.artist.isNotBlank()) put("artist", album.artist)
-                                    if (thumb.isNotBlank()) put("art_url", thumb)
-                                }
-                                val resp = withContext(Dispatchers.IO) { api.queueAppendAlbum(payload.toJsonRequestBody()) }
-                                if (!resp.isSuccessful) {
-                                    snack.showNonBlocking(scope, "Queue failed (HTTP ${resp.code()})")
-                                    return@launch
-                                }
-                                snack.showNonBlocking(scope, "Queued: ${album.title}")
-                            } catch (e: Exception) {
-                                snack.showNonBlocking(scope, "Queue error: ${e.javaClass.simpleName}")
-                            }
+                        scope.launchPlaybackAction(
+                            failureAction = "Queue",
+                            successMessage = "Queued: ${album.title}",
+                        ) {
+                            PlaybackActions.queueAlbum(ctx, albumPayload(album, thumb))
                         }
                     },
                 )
@@ -873,25 +502,7 @@ private fun AlbumRow(
                     text = { Text("Add to Subsonic") },
                     onClick = {
                         expanded = false
-                        scope.launch {
-                            try {
-                                val api = HelixClient.create(ctx, HelixPrefs.getBaseUrl(ctx))
-                                val payload = JSONObject().apply {
-                                    put("browse_id", album.browseId)
-                                    if (album.title.isNotBlank()) put("title", album.title)
-                                    if (album.artist.isNotBlank()) put("artist", album.artist)
-                                    if (thumb.isNotBlank()) put("art_url", thumb)
-                                }
-                                val resp = withContext(Dispatchers.IO) { api.subsonicAddAlbum(payload.toJsonRequestBody()) }
-                                if (!resp.isSuccessful) {
-                                    snack.showNonBlocking(scope, "Add to Subsonic failed (HTTP ${resp.code()})")
-                                    return@launch
-                                }
-                                snack.showNonBlocking(scope, "Added to Subsonic: ${album.title}")
-                            } catch (e: Exception) {
-                                snack.showNonBlocking(scope, "Add to Subsonic error: ${e.javaClass.simpleName}")
-                            }
-                        }
+                        onAddToSubsonic(album, albumPayload(album, thumb))
                     },
                 )
             }
@@ -950,100 +561,9 @@ private fun ArtistRow(
 }
 
 
-private fun parseArtists(json: String): List<SearchArtist> {
-    val root = JSONObject(json)
-    val artists = root.optJSONArray("artists") ?: JSONArray()
-    val out = ArrayList<SearchArtist>(artists.length())
-    for (i in 0 until artists.length()) {
-        val o = artists.optJSONObject(i) ?: continue
-        val name = o.optString("name", o.optString("artist", ""))
-        val browseId = o.optString("browse_id", o.optString("browseId", o.optString("artist_id", "")))
-        val thumb = when {
-            o.has("thumbnail_url") -> o.optString("thumbnail_url", "")
-            o.has("thumbnail") -> o.optString("thumbnail", "")
-            o.has("thumb") -> o.optString("thumb", "")
-            else -> ""
-        }
-        out.add(
-            SearchArtist(
-                name = name,
-                thumbnailUrl = thumb,
-                browseId = browseId,
-                subscriberCount = o.optString("subscriber_count", o.optString("subscribers", "")),
-                monthlyListeners = o.optString("monthly_listeners", o.optString("monthlyListeners", "")),
-            )
-        )
-    }
-    return out
-}
-
-private fun parseSongs(json: String): List<SearchSong> {
-    val root = JSONObject(json)
-    val songs = root.optJSONArray("songs") ?: JSONArray()
-    val out = ArrayList<SearchSong>(songs.length())
-    for (i in 0 until songs.length()) {
-        val o = songs.optJSONObject(i) ?: continue
-        val title = o.optString("title", "")
-        val artist = o.optString("artist", o.optString("artists", ""))
-        val album = o.optString("album", "")
-        val videoId = o.optString("video_id", o.optString("videoId", ""))
-        val source = o.optString("source", "ytmusic")
-        val subsonicSongId = o.optString("subsonic_song_id", o.optString("subsonicSongId", ""))
-        val thumb = when {
-            o.has("thumbnail_url") -> o.optString("thumbnail_url", "")
-            o.has("thumbnail") -> o.optString("thumbnail", "")
-            o.has("thumb") -> o.optString("thumb", "")
-            else -> ""
-        }
-        out.add(
-            SearchSong(
-                title = title,
-                artist = artist,
-                album = album,
-                thumbnailUrl = thumb,
-                videoId = videoId,
-                source = source,
-                subsonicSongId = subsonicSongId,
-            )
-        )
-    }
-    return out
-}
-
-private fun parseAlbums(json: String): List<SearchAlbum> {
-    val root = JSONObject(json)
-    val albums = root.optJSONArray("albums") ?: JSONArray()
-    val out = ArrayList<SearchAlbum>(albums.length())
-    for (i in 0 until albums.length()) {
-        val o = albums.optJSONObject(i) ?: continue
-        val title = o.optString("title", o.optString("name", ""))
-        val artist = o.optString("artist", o.optString("artists", ""))
-        val year = o.optString("year", o.optString("release_year", ""))
-        val browseId = o.optString("browse_id", o.optString("browseId", ""))
-        val source = o.optString("source", "ytmusic")
-        val subsonicAlbumId = o.optString("subsonic_album_id", o.optString("subsonicAlbumId", ""))
-        val thumb = when {
-            o.has("thumbnail_url") -> o.optString("thumbnail_url", "")
-            o.has("thumbnail") -> o.optString("thumbnail", "")
-            o.has("thumb") -> o.optString("thumb", "")
-            else -> ""
-        }
-        out.add(
-            SearchAlbum(
-                title = title,
-                artist = artist,
-                year = year,
-                thumbnailUrl = thumb,
-                browseId = browseId,
-                source = source,
-                subsonicAlbumId = subsonicAlbumId,
-            )
-        )
-    }
-    return out
-}
-
-private fun JSONObject.toJsonRequestBody(): RequestBody {
-    val mt = "application/json; charset=utf-8".toMediaType()
-    return toString().toRequestBody(mt)
+private fun albumPayload(album: SearchAlbum, absoluteThumb: String): JSONObject = JSONObject().apply {
+    put("browse_id", album.browseId)
+    if (album.title.isNotBlank()) put("title", album.title)
+    if (album.artist.isNotBlank()) put("artist", album.artist)
+    if (absoluteThumb.isNotBlank()) put("art_url", absoluteThumb)
 }

@@ -1,0 +1,772 @@
+package com.example.helixapp
+
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+
+// The playlist page's building blocks: headers, track rows, the edit bar and bulk sheet.
+
+@Composable
+internal fun PlaylistHeroHeader(
+    title: String,
+    coverUrl: String,
+    trackCount: Int,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        if (coverUrl.isNotBlank()) {
+            AsyncImage(
+                model = HelixImages.request(LocalContext.current, coverUrl),
+                contentDescription = null,
+                modifier = Modifier
+                    .size(160.dp)
+                    .clip(RoundedCornerShape(24.dp)),
+            )
+        } else {
+            Surface(
+                modifier = Modifier.size(160.dp),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+            ) {}
+        }
+
+        Text(
+            text = title,
+            style = MaterialTheme.typography.headlineMedium,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            text = "$trackCount songs",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+internal fun PlaylistActionRow(
+    loading: Boolean,
+    trackCount: Int,
+    canEditPlaylist: Boolean,
+    showMenu: Boolean,
+    onShowMenu: () -> Unit,
+    onDismissMenu: () -> Unit,
+    onPlay: () -> Unit,
+    onShuffle: () -> Unit,
+    onAddSongs: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Button(
+            enabled = !loading && trackCount > 0,
+            onClick = onPlay,
+            modifier = Modifier
+                .weight(1f)
+                .height(44.dp),
+            shape = RoundedCornerShape(14.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp),
+        ) {
+            Icon(
+                Icons.Filled.PlayArrow,
+                contentDescription = null,
+                modifier = Modifier.size(19.dp),
+            )
+            Spacer(Modifier.width(5.dp))
+            Text("Play")
+        }
+
+        Button(
+            enabled = !loading && trackCount > 1,
+            onClick = onShuffle,
+            modifier = Modifier
+                .weight(1f)
+                .height(44.dp),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+            ),
+            contentPadding = PaddingValues(horizontal = 12.dp),
+        ) {
+            Text("⇄", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.width(5.dp))
+            Text("Shuffle")
+        }
+
+        Surface(
+            modifier = Modifier.size(44.dp),
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+        ) {
+            IconButton(
+                enabled = !loading,
+                onClick = onAddSongs,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = "Add songs")
+            }
+        }
+
+        Box {
+            Surface(
+                modifier = Modifier.size(44.dp),
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+            ) {
+                IconButton(
+                    onClick = onShowMenu,
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "Playlist menu")
+                }
+            }
+
+            DropdownMenu(
+                expanded = showMenu,
+                onDismissRequest = onDismissMenu,
+                shape = HelixMenuShape,
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Add songs") },
+                    leadingIcon = {
+                        Icon(Icons.Filled.Add, contentDescription = null)
+                    },
+                    onClick = {
+                        onDismissMenu()
+                        onAddSongs()
+                    },
+                )
+
+                if (canEditPlaylist) {
+                    DropdownMenuItem(
+                        text = { Text("Edit playlist") },
+                        onClick = onEdit,
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Delete playlist") },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Delete, contentDescription = null)
+                        },
+                        onClick = onDelete,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun PlaylistEditHeader(
+    title: String,
+    onCancel: () -> Unit,
+    onDone: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        HelixTextButton(onClick = onCancel) { Text("Cancel") }
+        Text(
+            text = title,
+            modifier = Modifier.weight(1f),
+            textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        HelixTextButton(onClick = onDone) { Text("Done") }
+    }
+}
+
+@Composable
+internal fun CompactPlaylistHeader(
+    title: String,
+    coverUrl: String,
+    trackCount: Int,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (coverUrl.isNotBlank()) {
+            AsyncImage(
+                model = HelixImages.request(LocalContext.current, coverUrl),
+                contentDescription = null,
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(12.dp)),
+            )
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                "$trackCount songs",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+internal fun PlaylistTrackRow(
+    track: PlaylistTrackUi,
+    artUrl: String,
+    durationText: String,
+    menuOpen: Boolean,
+    onRowClick: () -> Unit,
+    onOpenMenu: () -> Unit,
+    onDismissMenu: () -> Unit,
+    onPlay: () -> Unit,
+    onPlayNext: () -> Unit,
+    onQueue: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onRowClick),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TrackArt(artUrl = artUrl, sizeDp = 50)
+            TrackText(track = track, modifier = Modifier.weight(1f))
+            if (durationText.isNotBlank()) {
+                Text(
+                    durationText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Box {
+                IconButton(onClick = onOpenMenu) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "Track menu")
+                }
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = onDismissMenu,
+                    shape = HelixMenuShape,
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Play now") },
+                        onClick = onPlay,
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Play next") },
+                        onClick = onPlayNext,
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Add to queue") },
+                        onClick = onQueue,
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Remove from playlist") },
+                        onClick = onRemove,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun EditablePlaylistTrackRow(
+    track: PlaylistTrackUi,
+    artUrl: String,
+    selected: Boolean,
+    durationText: String,
+    onToggle: () -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onDragFinished: () -> Unit,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+) {
+    var isDragging by remember { mutableStateOf(false) }
+    var dragOffsetPx by remember { mutableStateOf(0f) }
+
+    val rowScale by animateFloatAsState(
+        targetValue = if (isDragging) 1.035f else 1f,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "playlistRowDragScale",
+    )
+    val rowAlpha by animateFloatAsState(
+        targetValue = if (isDragging) 0.96f else 1f,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "playlistRowDragAlpha",
+    )
+    val handleAlpha by animateFloatAsState(
+        targetValue = if (isDragging) 1f else 0.78f,
+        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        label = "playlistHandleAlpha",
+    )
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .zIndex(if (isDragging) 10f else 0f)
+            .graphicsLayer {
+                translationY = dragOffsetPx
+                scaleX = rowScale
+                scaleY = rowScale
+                alpha = rowAlpha
+                shadowElevation = if (isDragging) 20f else 0f
+            }
+            .shadow(
+                elevation = if (isDragging) 16.dp else 0.dp,
+                shape = RoundedCornerShape(18.dp),
+                clip = false,
+            )
+            .then(
+                if (isDragging) {
+                    Modifier.border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.75f),
+                        shape = RoundedCornerShape(18.dp),
+                    )
+                } else {
+                    Modifier
+                }
+            )
+            .clickable(onClick = onToggle),
+        shape = RoundedCornerShape(16.dp),
+        color = when {
+            isDragging -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.94f)
+            selected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+            else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f)
+        },
+        tonalElevation = if (isDragging) 8.dp else 0.dp,
+        shadowElevation = if (isDragging) 10.dp else 0.dp,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Checkbox(
+                checked = selected,
+                onCheckedChange = { onToggle() },
+            )
+            TrackArt(artUrl = artUrl, sizeDp = 46)
+            TrackText(track = track, modifier = Modifier.weight(1f))
+            if (durationText.isNotBlank()) {
+                Text(
+                    durationText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            PlaylistDragHandle(
+                enabled = canMoveUp || canMoveDown,
+                activeAlpha = handleAlpha,
+                onMoveUp = onMoveUp,
+                onMoveDown = onMoveDown,
+                onDragStarted = {
+                    isDragging = true
+                    dragOffsetPx = 0f
+                },
+                onDragOffsetChanged = { dragOffsetPx = it },
+                onDragFinished = {
+                    isDragging = false
+                    dragOffsetPx = 0f
+                    onDragFinished()
+                },
+                canMoveUp = canMoveUp,
+                canMoveDown = canMoveDown,
+            )
+        }
+    }
+}
+
+@Composable
+internal fun PlaylistDragHandle(
+    enabled: Boolean,
+    activeAlpha: Float,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onDragStarted: () -> Unit,
+    onDragOffsetChanged: (Float) -> Unit,
+    onDragFinished: () -> Unit,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+) {
+    val thresholdPx = with(LocalDensity.current) { 56.dp.toPx() }
+    var dragRemainder by remember { mutableStateOf(0f) }
+    // Read the latest values inside the gesture. Keying pointerInput on them restarted the
+    // gesture as soon as a row reached the top or bottom, and the drag's save never ran.
+    val latestCanMoveUp by rememberUpdatedState(canMoveUp)
+    val latestCanMoveDown by rememberUpdatedState(canMoveDown)
+    val latestOnMoveUp by rememberUpdatedState(onMoveUp)
+    val latestOnMoveDown by rememberUpdatedState(onMoveDown)
+    val latestOnDragFinished by rememberUpdatedState(onDragFinished)
+
+    fun resetDrag() {
+        dragRemainder = 0f
+        onDragOffsetChanged(0f)
+    }
+
+    Box(
+        modifier = Modifier
+            .width(40.dp)
+            .height(54.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectVerticalDragGestures(
+                    onDragStart = {
+                        dragRemainder = 0f
+                        onDragStarted()
+                        onDragOffsetChanged(0f)
+                    },
+                    onVerticalDrag = { change, dragAmount ->
+                        change.consume()
+                        dragRemainder += dragAmount
+                        while (dragRemainder <= -thresholdPx && latestCanMoveUp) {
+                            latestOnMoveUp()
+                            dragRemainder += thresholdPx
+                        }
+                        while (dragRemainder >= thresholdPx && latestCanMoveDown) {
+                            latestOnMoveDown()
+                            dragRemainder -= thresholdPx
+                        }
+                        onDragOffsetChanged(
+                            dragRemainder.coerceIn(-thresholdPx, thresholdPx)
+                        )
+                    },
+                    onDragEnd = {
+                        resetDrag()
+                        latestOnDragFinished()
+                    },
+                    onDragCancel = {
+                        resetDrag()
+                        latestOnDragFinished()
+                    },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            modifier = Modifier.matchParentSize(),
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.onSurface.copy(
+                alpha = if (enabled) 0.08f else 0.03f
+            ),
+            content = {},
+        )
+        Column(
+            modifier = Modifier.graphicsLayer {
+                alpha = if (enabled) activeAlpha else 0.28f
+            },
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            repeat(3) {
+                Surface(
+                    modifier = Modifier
+                        .width(24.dp)
+                        .height(2.5.dp),
+                    shape = RoundedCornerShape(999.dp),
+                    color = MaterialTheme.colorScheme.onSurface.copy(
+                        alpha = if (enabled) 0.98f else 0.28f
+                    ),
+                    content = {},
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun TrackArt(
+    artUrl: String,
+    sizeDp: Int,
+) {
+    if (artUrl.isNotBlank()) {
+        AsyncImage(
+            model = HelixImages.request(LocalContext.current, artUrl),
+            contentDescription = null,
+            modifier = Modifier
+                .size(sizeDp.dp)
+                .clip(RoundedCornerShape(12.dp)),
+        )
+    } else {
+        Surface(
+            modifier = Modifier.size(sizeDp.dp),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+        ) {}
+    }
+}
+
+@Composable
+internal fun TrackText(
+    track: PlaylistTrackUi,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier) {
+        Text(
+            track.title,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        val sub = listOf(track.artist, track.album)
+            .filter { it.isNotBlank() }
+            .joinToString(" • ")
+        if (sub.isNotBlank()) {
+            Text(
+                sub,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+internal fun PlaylistEditBottomBar(
+    selectedCount: Int,
+    canMove: Boolean,
+    onRemove: () -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveToTop: () -> Unit,
+    onAddSongs: () -> Unit,
+    onMore: () -> Unit,
+) {
+    Surface(
+        tonalElevation = 8.dp,
+        shadowElevation = 8.dp,
+        shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp),
+        color = MaterialTheme.colorScheme.surface,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            BottomBarTextAction(
+                label = if (selectedCount > 0) {
+                    "Remove\n($selectedCount)"
+                } else {
+                    "Remove"
+                },
+                enabled = selectedCount > 0,
+                onClick = onRemove,
+            )
+            BottomBarTextAction(
+                label = "Move\nUp",
+                enabled = canMove,
+                onClick = onMoveUp,
+            )
+            BottomBarTextAction(
+                label = "Move\nTop",
+                enabled = canMove,
+                onClick = onMoveToTop,
+            )
+            BottomBarTextAction(
+                label = "Add\nSongs",
+                enabled = true,
+                onClick = onAddSongs,
+            )
+            BottomBarTextAction(
+                label = "More",
+                enabled = true,
+                onClick = onMore,
+            )
+        }
+    }
+}
+
+@Composable
+internal fun RowScope.BottomBarTextAction(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    TextButton(
+        enabled = enabled,
+        onClick = onClick,
+        modifier = Modifier
+            .weight(1f)
+            .heightIn(min = 48.dp),
+        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp),
+    ) {
+        Text(
+            label,
+            textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.labelMedium,
+        )
+    }
+}
+
+@Composable
+internal fun PlaylistBulkActionSheet(
+    selectedCount: Int,
+    onClear: () -> Unit,
+    onRemove: () -> Unit,
+    onQueue: () -> Unit,
+    onMoveToTop: () -> Unit,
+    onMoveDown: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "$selectedCount tracks selected",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f),
+            )
+            HelixTextButton(onClick = onClear) {
+                Text("Clear")
+            }
+        }
+        BulkSheetRow(
+            "Remove from playlist",
+            enabled = selectedCount > 0,
+            onClick = onRemove,
+        )
+        BulkSheetRow(
+            "Add to queue",
+            enabled = selectedCount > 0,
+            onClick = onQueue,
+        )
+        BulkSheetRow(
+            "Move selected to top",
+            enabled = selectedCount > 0,
+            onClick = onMoveToTop,
+        )
+        BulkSheetRow(
+            "Move selected down",
+            enabled = selectedCount > 0,
+            onClick = onMoveDown,
+        )
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        ) {
+            Text(
+                text = "Tip: hold the white handle. The selected row will lift up and move with your finger while reordering.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(14.dp),
+            )
+        }
+        Spacer(modifier = Modifier.height(16.dp))
+    }
+}
+
+@Composable
+internal fun BulkSheetRow(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
+            color = if (enabled) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+            },
+        )
+    }
+}
+
+internal fun formatDurationMs(durationMs: Long): String {
+    if (durationMs <= 0L) return ""
+    val totalSeconds = durationMs / 1000L
+    val minutes = totalSeconds / 60L
+    val seconds = totalSeconds % 60L
+    return "$minutes:${seconds.toString().padStart(2, '0')}"
+}
