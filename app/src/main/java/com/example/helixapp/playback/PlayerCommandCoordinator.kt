@@ -48,7 +48,7 @@ object PlayerCommandCoordinator {
         var failure = "unknown error"
         for (attempt in 1..ENDED_MAX_ATTEMPTS) {
             val result = runCatching { withContext(Dispatchers.IO) { api.ended() } }
-            result.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+            result.exceptionOrNull()?.let { throw it }
 
             val resp = result.getOrNull()
             if (resp != null && resp.isSuccessful) {
@@ -60,7 +60,7 @@ object PlayerCommandCoordinator {
 
             failure = resp?.let { "HTTP ${it.code()}" } ?: result.exceptionOrNull().toString()
             // A 4xx won't succeed on retry.
-            if (resp != null && resp.code() in 400..499) break
+            if (resp != null) break // Do not retry an ambiguous committed request.
             if (attempt < ENDED_MAX_ATTEMPTS) {
                 Log.w("HELIX_PLAYER", "POST /api/playback/ended failed ($failure); retrying")
                 delay(ENDED_RETRY_BASE_DELAY_MS shl (attempt - 1))
@@ -110,16 +110,10 @@ object PlayerCommandCoordinator {
             if (DevicePlayback.isEnabled(context)) PlaybackController.pause(context)
 
             val api = HelixClient.create(context, HelixPrefs.getBaseUrl(context))
-            val resp = runCatching { withContext(Dispatchers.IO) { api.pause() } }.getOrNull()
+            val resp = withContext(Dispatchers.IO) { api.pause() }
             
-            if (resp?.isSuccessful != true) {
-                // If the backend call fails (e.g. no network), we leave the local player paused.
-                // The user intended to pause, and local playback is halted. The next successful
-                // sync will resolve any backend mismatch.
-            } else {
-                // Re-apply backend truth to ensure perfect sync
-                HelixTransport.refreshAndSync(context)
-            }
+            if (!resp.isSuccessful) throw HelixHttpException(resp.code())
+            HelixTransport.refreshAndSync(context)
         }
     }
 
@@ -129,16 +123,11 @@ object PlayerCommandCoordinator {
             if (DevicePlayback.isEnabled(context)) PlaybackController.resume(context)
 
             val api = HelixClient.create(context, HelixPrefs.getBaseUrl(context))
-            val resp = runCatching { withContext(Dispatchers.IO) { api.resume() } }.getOrNull()
+            val resp = withContext(Dispatchers.IO) { api.resume() }
             
-            if (resp?.isSuccessful != true) {
-                // If we fail to tell the backend we resumed (e.g. no network), we might 
-                // encounter playback errors eventually, but we let it try to play locally.
-            } else {
-                // Allow first: the sync below must be able to play on this phone.
-                HelixTransport.allowLocalPlayback()
-                HelixTransport.refreshAndSync(context, forceLoadStream = true)
-            }
+            if (!resp.isSuccessful) throw HelixHttpException(resp.code())
+            HelixTransport.allowLocalPlayback()
+            HelixTransport.refreshAndSync(context, forceLoadStream = true)
         }
     }
 }
